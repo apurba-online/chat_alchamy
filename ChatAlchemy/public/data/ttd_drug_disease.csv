@@ -1,0 +1,28 @@
+ID,TTDDRUID,DRUGNAME,INDICATION,ICD_11,STATUS
+397,D0X5UL,Salmonella typhi vaccine,Salmonella infection,ICD-11: 1A09,Approved
+398,D0X5SJ,Alacepril,Cardiovascular disease,ICD-11: BA00-BE2Z,Approved
+399,D0X5SI,Carbocisteine,Chronic obstructive pulmonary disease,ICD-11: CA22,Approved
+400,D0X5SD,Disulfiram,Alcohol dependence,ICD-11: 6C40.2,Approved
+401,D0X5NX,Clenbuterol,Chronic breathing disorder,ICD-11: 7A4Z,Approved
+402,D0X5KF,Hydrocodone,Pain,ICD-11: MG30-MG3Z,Approved
+403,D0X4ZR,Bupropion,Smoking dependence,ICD-11: 6C4A.2,Approved
+404,D0X4RS,Cortisone Acetate,Solid tumour/cancer,ICD-11: 2A00-2F9Z,Approved
+405,D0X4RN,Lidocaine,Anaesthesia,ICD-11: 9A78.6,Approved
+406,D0X4RN,Lidocaine,Dysmenorrhea,ICD-11: GA34.3,Phase 2
+407,D0X4JN,Pelubiprofen,Back pain,ICD-11: ME84.Z,Approved
+408,D0X4FM,Docusate,Constipation,ICD-11: DD91.1,Approved
+409,D0X4CS,Cefroxadine,Bacterial infection,ICD-11: 1A00-1C4Z,Approved
+410,D0X4BZ,Virulizin,Breast cancer,ICD-11: 2C60-2C65,Approved
+411,D0X3FX,Naloxone,Narcotic depression,ICD-11: 6A7Z,Approved
+412,D0X3FX,Naloxone,Pruritus,ICD-11: EC90,Phase 3
+413,D0X3FX,Naloxone,Respiratory depression,ICD-11: MD11.5,Phase 3
+414,D0X3FX,Naloxone,Opioid dependence,ICD-11: 6C43.2Z,Phase 1
+415,D0X2UE,Sulprostone,Medical abortion,ICD-11: JA00.1Z,Approved
+416,D0X2RJ,Technetium TC 99M votumumab,Colorectal cancer,ICD-11: 2B91.Z,Approved
+417,D0X2MB,Oxprenolol,Hypertension,ICD-11: BA00-BA04,Approved
+418,D0X2LV,Betamethasone butyrate propion,Inflammation,ICD-11: 1A00-CA43.1,Approved
+419,D0X2IE,Dimercaprol,Poison intoxication,ICD-11: NE6Z,Approved
+420,D0X2HE,GlycoPEG-GCSF,Solid tumour/cancer,ICD-11: 2A00-2F9Z,Approved
+421,D0X2FT,Gadoxetate disodium,Imaging,ICD-11: QA0B,Approved
+422,D0X2DK,Phenoxybenzamine,Malignant essential hypertension,ICD-11: BA00,Approved
+423,D0X1WJ,Josamycin,Bacterial infection,ICD-11: 1A00-1C4Z,Approved
