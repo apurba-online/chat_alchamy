@@ -13,7 +13,7 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Unzip ChatAlchamy.zip to root folder
-        run: unzip ChatAlchamy.zip -d .
+        run: unzip ChatAlchamy.zip -d ./
 
       - name: List Files in Root Folder
         run: ls -al
