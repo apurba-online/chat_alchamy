@@ -10,7 +10,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v2
         with:
-          token: ${{ secrets.TEMP_SECRET }}
+          token: ${{ secrets.PUSH_TOKEN }}
 
       - name: List Files in Repository Root Before Unzipping
         run: ls -al
