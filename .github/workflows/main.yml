@@ -1,0 +1,19 @@
+name: Automated Unzip Workflow
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Unzip ChatAlchamy.zip to root folder
+        run: unzip ChatAlchamy.zip -d .
+
+      - name: List Files in Root Folder
+        run: ls -al
