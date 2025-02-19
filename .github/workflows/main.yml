@@ -15,8 +15,8 @@ jobs:
       - name: List Files in Repository Root Before Unzipping
         run: ls -al
 
-      - name: Unzip ChatAlchamy.zip to Root Folder
-        run: unzip ChatAlchamy.zip -d .
+      - name: Unzip ChatAlchemy.zip to Root Folder
+        run: unzip ChatAlchemy.zip -d .
 
       - name: List Files in Repository Root After Unzipping
         run: ls -al
