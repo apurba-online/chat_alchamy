@@ -1,0 +1,20 @@
+name: Move Files Workflow
+
+on:
+  workflow_dispatch:
+
+jobs:
+  move-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Create destination directory
+        run: mkdir -p destination_directory
+
+      - name: Move files from source_directory to destination_directory
+        run: mv ChatAlchamy/* .
+
+      - name: List files in destination_directory
+        run: ls -al .
