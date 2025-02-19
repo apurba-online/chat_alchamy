@@ -1,0 +1,11 @@
+Product ID,Product Name,Category,Price,Stock
+P001,Laptop Pro X,Electronics,1299.99,50
+P002,Wireless Mouse,Accessories,29.99,200
+P003,4K Monitor,Electronics,499.99,30
+P004,Mechanical Keyboard,Accessories,149.99,100
+P005,USB-C Hub,Accessories,39.99,150
+P006,Gaming Headset,Electronics,89.99,75
+P007,Webcam HD,Electronics,79.99,60
+P008,SSD 1TB,Storage,129.99,90
+P009,External HDD 2TB,Storage,89.99,40
+P010,Graphics Card RTX,Components,799.99,25
