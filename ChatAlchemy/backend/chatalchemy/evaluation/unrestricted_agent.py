@@ -16,6 +16,7 @@ TOOL_NAMES = (
     "pubchem",
     "none",
 )
+DEFAULT_MAX_TOOL_STEPS = 40
 
 
 class UnrestrictedToolAgent:
@@ -24,9 +25,13 @@ class UnrestrictedToolAgent:
     This baseline intentionally does not use ChatAlchemy's typed planner,
     normalization logic, deterministic final joins, conflict analysis, or claim
     verifier. It is not used by the production application.
+
+    The default 40-step ceiling is deliberately generous enough to cover the
+    order of source calls used by ChatAlchemy's hardest multi-candidate
+    cross-source path. Actual calls are recorded and reported separately.
     """
 
-    def __init__(self, llm: LLMClient, sources: dict[str, Any], *, max_steps: int = 6, max_results: int = 20):
+    def __init__(self, llm: LLMClient, sources: dict[str, Any], *, max_steps: int = DEFAULT_MAX_TOOL_STEPS, max_results: int = 20):
         self.llm = llm
         self.sources = sources
         self.max_steps = max_steps
