@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
-BENCHMARK_VERSION = "LiveBioEvidenceBench-v2"
+BENCHMARK_VERSION = "LiveBioEvidenceBench-v2.1"
 SPLIT_RATIOS = {"dev": 0.20, "test": 0.60, "stress": 0.20}
 
 
@@ -34,8 +34,8 @@ ENTITY_POOLS: dict[str, EntityPool] = {
             ("Tarceva", "erlotinib"), ("Erbitux", "cetuximab"),
         ),
         compounds=(
-            "pembrolizumab", "osimertinib", "acetaminophen", "trastuzumab",
-            "nivolumab", "afatinib", "erlotinib", "cetuximab",
+            "osimertinib", "acetaminophen", "afatinib", "erlotinib",
+            "ibuprofen", "aspirin", "metformin", "atorvastatin",
         ),
         targets=("EGFR", "ERBB2", "PDCD1", "VEGFA"),
         conditions=(
@@ -58,18 +58,18 @@ ENTITY_POOLS: dict[str, EntityPool] = {
             ("Zelboraf", "vemurafenib"), ("Lynparza", "olaparib"),
         ),
         compounds=(
-            "gefitinib", "panitumumab", "imatinib", "rituximab", "bevacizumab",
-            "atezolizumab", "durvalumab", "crizotinib", "lorlatinib", "dabrafenib",
-            "vemurafenib", "olaparib",
+            "gefitinib", "imatinib", "crizotinib", "lorlatinib", "dabrafenib",
+            "vemurafenib", "olaparib", "rucaparib", "niraparib", "ceritinib",
+            "brigatinib", "tramadol",
         ),
-        targets=("ALK", "BRAF", "MET", "KRAS", "PARP1", "ESR1", "VEGFR2", "KIT", "ABL1", "CD20"),
+        targets=("ALK", "BRAF", "MET", "KRAS", "PARP1", "ESR1", "VEGFR2", "KIT", "ABL1", "CD20", "BTK", "JAK2"),
         conditions=(
             "colorectal cancer", "head and neck squamous cell carcinoma", "ovarian cancer",
             "renal cell carcinoma", "urothelial carcinoma", "hepatocellular carcinoma",
             "diffuse large B-cell lymphoma", "acute myeloid leukemia",
             "chronic lymphocytic leukemia", "prostate cancer",
         ),
-        genes=("ALK", "BRAF", "MET", "KRAS", "PARP1", "ESR1", "PTEN", "PIK3CA", "KIT", "ABL1", "MS4A1", "VEGFR2"),
+        genes=("ALK", "BRAF", "MET", "KRAS", "PARP1", "ESR1", "PTEN", "PIK3CA", "KIT", "ABL1", "MS4A1", "KDR"),
     ),
     "stress": EntityPool(
         drugs=(
@@ -87,8 +87,8 @@ ENTITY_POOLS: dict[str, EntityPool] = {
         ),
         compounds=(
             "trametinib", "selpercatinib", "capmatinib", "tepotinib", "sotorasib",
-            "adagrasib", "amivantamab", "lapatinib", "pertuzumab", "palbociclib",
-            "alpelisib", "everolimus",
+            "adagrasib", "lapatinib", "palbociclib", "alpelisib", "everolimus",
+            "tofacitinib", "pemigatinib",
         ),
         targets=("RET", "ROS1", "PIK3CA", "CDK4", "CDK6", "FGFR2", "FGFR3", "MTOR"),
         conditions=(
@@ -182,6 +182,8 @@ FAMILY_SPECS: dict[str, FamilySpec] = {
             "Find drugs with a ChEMBL mechanism targeting {target}.",
             "What drug candidates are linked to target {target} in ChEMBL?",
             "Retrieve ChEMBL drug mechanisms for target {target}.",
+            "Which molecules have ChEMBL mechanism records for target {target}?",
+            "Show drug mechanisms associated with target {target} in ChEMBL.",
         ),
         "target_drugs", ("chembl",), "set", "easy",
     ),
@@ -260,6 +262,8 @@ FAMILY_SPECS: dict[str, FamilySpec] = {
             "Return uploaded candidates linked to target {target} in ChEMBL.",
             "Which drugs from my uploaded data have mechanisms targeting {target}?",
             "Use ChEMBL to identify uploaded drugs that target {target}.",
+            "Which uploaded candidates have mechanism records for target {target}?",
+            "Filter my uploaded candidate set using ChEMBL target {target} evidence.",
         ),
         "target_drugs", ("chembl",), "set", "medium",
     ),
@@ -281,6 +285,7 @@ class BenchmarkCase:
     template_id: str = ""
     primary_entity: str = ""
     primary_entity_type: str = ""
+    task_signature: str = ""
 
 
 def split_sizes(n: int) -> dict[str, int]:
@@ -328,11 +333,19 @@ def _draw_params(rng: random.Random, pool: EntityPool, family: str) -> dict[str,
     }
 
 
+def _task_signature(family: str, question: str, params: dict[str, Any]) -> str:
+    context: dict[str, Any] = {"family": family, "question": question}
+    if family.startswith("user_"):
+        context["candidates"] = sorted(str(x).lower() for x in params.get("candidates", []))
+    payload = json.dumps(context, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def generate_cases(n: int = 1500, seed: int = 1729) -> list[BenchmarkCase]:
     rng = random.Random(seed)
     sizes = split_sizes(n)
     families = list(FAMILY_SPECS)
-    seen_questions: set[str] = set()
+    seen_signatures: set[str] = set()
     cases: list[BenchmarkCase] = []
     global_index = 0
 
@@ -344,16 +357,18 @@ def generate_cases(n: int = 1500, seed: int = 1729) -> list[BenchmarkCase]:
             question = ""
             params: dict[str, Any] = {}
             template_index = 0
-            for _ in range(1000):
+            signature = ""
+            for _ in range(2000):
                 params = _draw_params(rng, pool, family)
                 template_index = rng.randrange(len(spec.templates))
                 question = spec.templates[template_index].format(**params)
-                if question not in seen_questions:
+                signature = _task_signature(family, question, params)
+                if signature not in seen_signatures:
                     break
             else:
-                raise RuntimeError(f"could not generate a unique benchmark question for {split}/{family}")
+                raise RuntimeError(f"could not generate a unique benchmark task for {split}/{family}")
 
-            seen_questions.add(question)
+            seen_signatures.add(signature)
             global_index += 1
             primary_entity, primary_type = _primary(family, params)
             cases.append(
@@ -371,6 +386,7 @@ def generate_cases(n: int = 1500, seed: int = 1729) -> list[BenchmarkCase]:
                     template_id=f"{family}-{template_index + 1}",
                     primary_entity=primary_entity,
                     primary_entity_type=primary_type,
+                    task_signature=signature,
                 )
             )
     return cases
@@ -399,8 +415,8 @@ def validate_cases(cases: list[BenchmarkCase]) -> dict[str, Any]:
         raise ValueError("benchmark is empty")
     if len({case.id for case in cases}) != len(cases):
         raise ValueError("benchmark case IDs are not unique")
-    if len({case.question for case in cases}) != len(cases):
-        raise ValueError("benchmark questions are not unique")
+    if len({case.task_signature for case in cases}) != len(cases):
+        raise ValueError("benchmark task signatures are not unique")
 
     expected_sizes = split_sizes(len(cases))
     observed_sizes = Counter(case.split for case in cases)
@@ -445,6 +461,8 @@ def benchmark_manifest(cases: list[BenchmarkCase]) -> dict[str, Any]:
     return {
         "schema": BENCHMARK_VERSION,
         "case_count": len(cases),
+        "surface_question_count": len({case.question for case in cases}),
+        "task_signature_count": len({case.task_signature for case in cases}),
         "fingerprint_sha256": benchmark_fingerprint(cases),
         "split_counts": dict(Counter(case.split for case in cases)),
         "family_counts": dict(Counter(case.family for case in cases)),
