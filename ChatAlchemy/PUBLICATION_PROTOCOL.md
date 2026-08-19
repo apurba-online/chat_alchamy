@@ -48,16 +48,17 @@ Minimum comparison matrix:
 
 1. `LLM-only`: same question, no retrieved live evidence.
 2. `Same-retrieval LLM`: receives the evidence objects retrieved for ChatAlchemy but performs the final composition itself instead of using ChatAlchemy's deterministic result.
-3. `ChatAlchemy full`.
-4. Component ablations:
+3. `Unrestricted same-tools LLM agent`: the model chooses sequential calls to the same seven live source adapters without ChatAlchemy's rule planner, normalization logic, deterministic final joins, conflict classifier, or claim verifier. The agent receives a generous 40-step ceiling so difficult multi-candidate tasks are not artificially handicapped; actual calls and token usage are recorded.
+4. `ChatAlchemy full`.
+5. Component ablations:
    - no entity normalization;
    - no deterministic cross-source join;
    - no conflict analysis;
    - no claim verifier.
 
-A reproducible unrestricted tool-agent or external biomedical-agent baseline should be reported when source/task coverage is sufficiently comparable. Coverage and tool-budget differences must be described rather than hidden in one aggregate number.
+An additional external biomedical-agent baseline may be reported only when source/task coverage is sufficiently comparable. Coverage, call limits, and tool-budget differences must be described rather than hidden in one aggregate number.
 
-The model-baseline harness evaluates ChatAlchemy-full and the model baseline on every case against the same oracle state, making the main comparison paired by construction.
+The model-baseline harness evaluates ChatAlchemy-full and each model baseline on every case against the same oracle state, making the main comparisons paired by construction.
 
 ## Primary outcomes
 
@@ -81,8 +82,9 @@ Secondary outcomes:
 - Grounded Obedience Score (GOS);
 - Parametric Memory Intrusion Rate (PMIR);
 - median and p95 latency;
-- API calls/evidence items per question;
-- token and monetary cost when model APIs are used.
+- API/tool calls and evidence items per question;
+- model input/output/total tokens per question;
+- monetary cost derived from the exact model/provider pricing applicable at experiment time.
 
 A verifier score of 1.0 on a case with zero claims must not be interpreted as perfect grounding. Claim coverage and claim support are always reported together.
 
@@ -133,6 +135,8 @@ Every reported run must preserve:
 - system/ablation configuration;
 - model/provider/exact model identifier and prompt version when applicable;
 - result limits/retry policy;
+- tool-step ceiling and actual tool-call count for agent baselines;
+- model input/output/total token usage;
 - UTC start/end times;
 - per-case oracle outputs, source record IDs, and snapshot hashes;
 - per-case predictions and traces;
