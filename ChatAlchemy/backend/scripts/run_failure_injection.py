@@ -7,7 +7,7 @@ import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 
-from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, select_cases, validate_cases
+from chatalchemy.benchmark import EvaluationOracle, generate_cases, score_value, select_cases, validate_cases
 from chatalchemy.evaluation import FaultInjectedSource
 from chatalchemy.reasoning import ChatAlchemyEngine
 from scripts.run_live_benchmark import prediction, user_evidence
@@ -25,12 +25,21 @@ METHOD_BY_SOURCE = {
 
 
 def _aggregate(rows):
-    scored = [float(r["task_score"]) for r in rows if r.get("task_score") is not None]
+    injected = [float(r["task_score"]) for r in rows if r.get("task_score") is not None]
+    controls = [float(r["control_task_score"]) for r in rows if r.get("control_task_score") is not None]
+    paired = [
+        (float(r["control_task_score"]), float(r["task_score"]))
+        for r in rows
+        if r.get("control_task_score") is not None and r.get("task_score") is not None
+    ]
     claimed = [r for r in rows if int(r.get("claim_count", 0)) > 0]
     return {
         "n": len(rows),
         "oracle_coverage": statistics.mean(bool(r["oracle_available"]) for r in rows) if rows else 0.0,
-        "mean_task_score": statistics.mean(scored) if scored else None,
+        "control_mean_task_score": statistics.mean(controls) if controls else None,
+        "injected_mean_task_score": statistics.mean(injected) if injected else None,
+        "paired_n": len(paired),
+        "paired_mean_score_degradation": statistics.mean(control - injected for control, injected in paired) if paired else None,
         "claiming_rate": len(claimed) / len(rows) if rows else 0.0,
         "mean_supported_claim_rate_on_claimed": statistics.mean(float(r["supported_claim_rate"]) for r in claimed) if claimed else None,
         "failure_trace_rate": statistics.mean(bool(r["failure_trace_detected"]) for r in rows) if rows else 0.0,
@@ -49,6 +58,7 @@ async def main():
     parser.add_argument("--limit", type=int, default=150, help="0 means all selected cases requiring the source")
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--oracle-snapshot", default=None)
     parser.add_argument("--out", default="benchmark/failure-injection.json")
     args = parser.parse_args()
 
@@ -58,7 +68,6 @@ async def main():
         all_cases,
         split=args.split,
         difficulty=args.difficulty,
-        families=None,
         limit=None,
         num_shards=args.num_shards,
         shard_index=args.shard_index,
@@ -69,27 +78,30 @@ async def main():
     if not cases:
         raise SystemExit("No cases require the selected source under the requested filters")
 
-    engine = ChatAlchemyEngine()
-    underlying = engine.sources[args.source]
+    control_engine = ChatAlchemyEngine()
+    injected_engine = ChatAlchemyEngine()
+    underlying = injected_engine.sources[args.source]
     source_display_name = getattr(underlying, "name", args.source)
-    engine.sources[args.source] = FaultInjectedSource(
+    injected_engine.sources[args.source] = FaultInjectedSource(
         underlying,
         fail_methods=METHOD_BY_SOURCE[args.source],
         mode=args.mode,
     )
-    oracle = LiveOracle()
+    oracle = EvaluationOracle(
+        benchmark_fingerprint=manifest["fingerprint_sha256"],
+        snapshot_path=args.oracle_snapshot,
+    )
     rows = []
     started = datetime.now(timezone.utc)
     try:
         for case in cases:
-            gold = None
-            oracle_error = None
-            try:
-                gold = await oracle.execute(case)
-            except Exception as exc:
-                oracle_error = f"{type(exc).__name__}: {exc}"
+            gold, oracle_error = await oracle.get(case)
 
-            response = await engine.answer(case.question, user_evidence=user_evidence(case))
+            control = await control_engine.answer(case.question, user_evidence=user_evidence(case))
+            control_pred = prediction(case, control)
+            control_score = score_value(gold.kind, control_pred, gold.value) if gold is not None else None
+
+            response = await injected_engine.answer(case.question, user_evidence=user_evidence(case))
             pred = prediction(case, response)
             score = score_value(gold.kind, pred, gold.value) if gold is not None else None
             failed_trace = any(
@@ -107,9 +119,11 @@ async def main():
                     "family": case.family,
                     "question": case.question,
                     "task_score": score,
+                    "control_task_score": control_score,
                     "oracle_available": gold is not None,
                     "oracle_error": oracle_error,
                     "prediction": pred,
+                    "control_prediction": control_pred,
                     "oracle": gold.value if gold is not None else None,
                     "supported_claim_rate": response.supported_claim_rate,
                     "claim_count": len(response.claims),
@@ -121,10 +135,10 @@ async def main():
                 }
             )
     finally:
-        await asyncio.gather(engine.close(), oracle.close())
+        await asyncio.gather(control_engine.close(), injected_engine.close(), oracle.close())
 
     result = {
-        "schema": "ChatAlchemyFailureInjection/v2",
+        "schema": "ChatAlchemyFailureInjection/v3",
         "run": {
             "source": args.source,
             "source_display_name": source_display_name,
@@ -137,6 +151,7 @@ async def main():
             "seed": args.seed,
             "started_at_utc": started.isoformat(),
             "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+            **oracle.metadata(),
         },
         "benchmark": {**manifest, "seed": args.seed},
         "summary": _aggregate(rows),
