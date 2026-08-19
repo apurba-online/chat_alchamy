@@ -45,7 +45,10 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
             if run["benchmark"].get(key) != first_benchmark.get(key):
                 raise ValueError(f"benchmark metadata mismatch for {key}")
 
-    invariant_run_keys = ("seed", "benchmark_n", "split_filter", "difficulty_filter", "max_results", "system")
+    invariant_run_keys = (
+        "seed", "benchmark_n", "split_filter", "difficulty_filter", "max_results", "system",
+        "oracle_mode", "oracle_snapshot_file_sha256",
+    )
     first_meta = runs[0]["run"]
     for run in runs[1:]:
         for key in invariant_run_keys:
@@ -60,7 +63,7 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
     rows.sort(key=lambda row: str(row.get("id")))
 
     merged = {
-        "schema": "ChatAlchemyBenchmarkRunMerged/v1",
+        "schema": "ChatAlchemyBenchmarkRunMerged/v2",
         "run": {
             **{key: first_meta.get(key) for key in invariant_run_keys},
             "num_shards": declared_shards,
