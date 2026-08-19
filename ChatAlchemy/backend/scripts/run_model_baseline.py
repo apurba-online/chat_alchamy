@@ -137,7 +137,7 @@ async def main() -> None:
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--max-results", type=int, default=20)
-    parser.add_argument("--max-tool-steps", type=int, default=6)
+    parser.add_argument("--max-tool-steps", type=int, default=40, help="Generous ceiling matched to the order of work in ChatAlchemy's hardest cross-source path")
     parser.add_argument("--oracle-snapshot", default=None)
     parser.add_argument("--out", default="benchmark/model-baseline.json")
     args = parser.parse_args()
