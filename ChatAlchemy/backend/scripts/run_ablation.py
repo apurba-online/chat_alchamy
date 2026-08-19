@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import statistics
 from datetime import datetime, timezone
 from pathlib import Path
@@ -125,6 +126,7 @@ async def main() -> None:
         "run": {
             "started_at_utc": started.isoformat(),
             "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+            "git_sha": os.getenv("GITHUB_SHA") or os.getenv("VERCEL_GIT_COMMIT_SHA"),
             "seed": args.seed,
             "split_filter": args.split,
             "difficulty_filter": args.difficulty,
