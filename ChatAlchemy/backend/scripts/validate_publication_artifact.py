@@ -13,6 +13,7 @@ BACKEND = ROOT / "backend"
 
 REQUIRED_FILES = [
     ROOT / "PUBLICATION_PROTOCOL.md",
+    ROOT / "PAPER_IMPLEMENTATION.md",
     BACKEND / "benchmark" / "BENCHMARK_CARD.md",
     BACKEND / "benchmark" / "EXPERT_EVALUATION.md",
     BACKEND / "benchmark" / "expert_eval_template.csv",
@@ -21,6 +22,7 @@ REQUIRED_FILES = [
     BACKEND / "chatalchemy" / "benchmark" / "oracle_snapshot.py",
     BACKEND / "chatalchemy" / "benchmark" / "oracle_provider.py",
     BACKEND / "chatalchemy" / "benchmark" / "external_holdout.py",
+    BACKEND / "chatalchemy" / "evaluation" / "unrestricted_agent.py",
     BACKEND / "scripts" / "generate_livebiobench.py",
     BACKEND / "scripts" / "build_oracle_snapshot.py",
     BACKEND / "scripts" / "merge_oracle_snapshots.py",
@@ -91,8 +93,16 @@ def validate_security() -> None:
 def validate_protocol_alignment(manifest: dict) -> None:
     protocol = (ROOT / "PUBLICATION_PROTOCOL.md").read_text()
     card = (BACKEND / "benchmark" / "BENCHMARK_CARD.md").read_text()
-    if BENCHMARK_VERSION not in protocol or BENCHMARK_VERSION not in card:
-        raise AssertionError("publication protocol and benchmark card must name the current benchmark version")
+    implementation = (ROOT / "PAPER_IMPLEMENTATION.md").read_text()
+    if BENCHMARK_VERSION not in protocol or BENCHMARK_VERSION not in card or BENCHMARK_VERSION not in implementation:
+        raise AssertionError("publication documentation must name the current benchmark version")
+    if "Unrestricted same-tools LLM agent" not in protocol:
+        raise AssertionError("publication protocol must include the unrestricted same-tools agent baseline")
+    if "unrestricted same-tools LLM agent" not in implementation:
+        raise AssertionError("implementation record must document the unrestricted same-tools agent baseline")
+    workflow = (REPO_ROOT / ".github" / "workflows" / "chatalchemy-paper-experiments.yml").read_text()
+    if "baseline_unrestricted_tools" not in workflow:
+        raise AssertionError("paper workflow must expose the unrestricted same-tools baseline")
     if manifest.get("case_count") != 1500:
         raise AssertionError("publication benchmark must contain 1500 task states")
     if manifest.get("task_signature_count") != 1500:
@@ -130,6 +140,7 @@ def main() -> None:
         "security_gate": "passed",
         "split_isolation_gate": "passed",
         "protocol_alignment_gate": "passed",
+        "required_same_tools_baseline": "passed",
     }
     print(json.dumps(summary, indent=2, default=str))
 
