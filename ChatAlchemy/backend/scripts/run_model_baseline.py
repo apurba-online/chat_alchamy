@@ -10,12 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, select_cases, validate_cases
+from chatalchemy.benchmark import EvaluationOracle, generate_cases, score_value, select_cases, validate_cases
 from chatalchemy.llm import LLMClient
 from chatalchemy.reasoning import ChatAlchemyEngine
+from scripts.run_live_benchmark import prediction as chatalchemy_prediction
 from scripts.run_live_benchmark import user_evidence
 
-PROMPT_VERSION = "model-baseline-v2"
+PROMPT_VERSION = "model-baseline-v3"
 PUBLIC_BENCHMARK_N = 1500
 
 
@@ -95,12 +96,21 @@ def _evidence_payload(response) -> list[dict[str, Any]]:
 
 
 def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    scored = [float(row["task_score"]) for row in rows if row.get("task_score") is not None]
+    baseline = [float(row["task_score"]) for row in rows if row.get("task_score") is not None]
+    full = [float(row["chatalchemy_task_score"]) for row in rows if row.get("chatalchemy_task_score") is not None]
+    paired = [
+        (float(row["chatalchemy_task_score"]), float(row["task_score"]))
+        for row in rows
+        if row.get("chatalchemy_task_score") is not None and row.get("task_score") is not None
+    ]
     return {
         "n": len(rows),
         "oracle_coverage": statistics.mean(bool(row["oracle_available"]) for row in rows) if rows else 0.0,
-        "mean_task_score": statistics.mean(scored) if scored else None,
-        "median_latency_ms": statistics.median(float(row["latency_ms"]) for row in rows) if rows else 0.0,
+        "baseline_mean_task_score": statistics.mean(baseline) if baseline else None,
+        "chatalchemy_mean_task_score": statistics.mean(full) if full else None,
+        "paired_n": len(paired),
+        "paired_mean_chatalchemy_minus_baseline": statistics.mean(a - b for a, b in paired) if paired else None,
+        "median_baseline_latency_ms": statistics.median(float(row["baseline_latency_ms"]) for row in rows) if rows else 0.0,
         "model_error_rate": statistics.mean(bool(row.get("model_error")) for row in rows) if rows else 0.0,
         "retrieval_error_rate": statistics.mean(bool(row.get("retrieval_error")) for row in rows) if rows else 0.0,
     }
@@ -117,6 +127,7 @@ async def main() -> None:
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--max-results", type=int, default=20)
+    parser.add_argument("--oracle-snapshot", default=None)
     parser.add_argument("--out", default="benchmark/model-baseline.json")
     args = parser.parse_args()
 
@@ -138,33 +149,32 @@ async def main() -> None:
     if not cases:
         raise SystemExit("No cases matched the requested filters")
 
-    oracle = LiveOracle()
-    engine = ChatAlchemyEngine() if args.mode == "same_retrieval_llm" else None
+    oracle = EvaluationOracle(
+        benchmark_fingerprint=manifest["fingerprint_sha256"],
+        snapshot_path=args.oracle_snapshot,
+    )
+    engine = ChatAlchemyEngine()
     rows: list[dict[str, Any]] = []
     started = datetime.now(timezone.utc)
     try:
         for case in cases:
             case_started = time.perf_counter()
-            gold = None
-            oracle_error = None
-            try:
-                gold = await oracle.execute(case)
-            except Exception as exc:
-                oracle_error = f"{type(exc).__name__}: {exc}"
+            gold, oracle_error = await oracle.get(case)
 
-            evidence = None
             retrieval_error = None
-            if engine is not None:
-                try:
-                    retrieved = await engine.answer(
-                        case.question,
-                        max_results=args.max_results,
-                        user_evidence=user_evidence(case),
-                    )
-                    evidence = _evidence_payload(retrieved)
-                except Exception as exc:
-                    retrieval_error = f"{type(exc).__name__}: {exc}"
-                    evidence = []
+            full_response = None
+            try:
+                full_response = await engine.answer(
+                    case.question,
+                    max_results=args.max_results,
+                    user_evidence=user_evidence(case),
+                )
+            except Exception as exc:
+                retrieval_error = f"{type(exc).__name__}: {exc}"
+
+            full_pred = chatalchemy_prediction(case, full_response) if full_response is not None else None
+            full_score = score_value(gold.kind, full_pred, gold.value) if gold is not None and full_pred is not None else None
+            evidence = _evidence_payload(full_response) if args.mode == "same_retrieval_llm" and full_response is not None else None
 
             instructions = (
                 "You are being evaluated on biomedical evidence reasoning. "
@@ -182,6 +192,7 @@ async def main() -> None:
             }
             model_error = None
             raw_output: dict[str, Any] = {}
+            model_started = time.perf_counter()
             try:
                 raw_output = await llm.json(
                     instructions,
@@ -191,6 +202,7 @@ async def main() -> None:
                 )
             except Exception as exc:
                 model_error = f"{type(exc).__name__}: {exc}"
+            baseline_latency = (time.perf_counter() - model_started) * 1000
 
             pred = _prediction(case, raw_output) if not model_error else None
             score = score_value(gold.kind, pred, gold.value) if gold is not None and pred is not None else None
@@ -203,22 +215,24 @@ async def main() -> None:
                     "family": case.family,
                     "question": case.question,
                     "task_score": score,
+                    "chatalchemy_task_score": full_score,
                     "oracle_available": gold is not None,
                     "oracle_error": oracle_error,
                     "oracle": gold.value if gold is not None else None,
                     "prediction": pred,
+                    "chatalchemy_prediction": full_pred,
                     "model_output": raw_output,
                     "model_error": model_error,
                     "retrieval_error": retrieval_error,
                     "evidence_count": len(evidence or []),
-                    "latency_ms": (time.perf_counter() - case_started) * 1000,
+                    "baseline_latency_ms": baseline_latency,
+                    "total_case_latency_ms": (time.perf_counter() - case_started) * 1000,
                 }
             )
     finally:
         await oracle.close()
         await llm.close()
-        if engine is not None:
-            await engine.close()
+        await engine.close()
 
     finished = datetime.now(timezone.utc)
     by_family = {
@@ -226,7 +240,7 @@ async def main() -> None:
         for family in sorted({row["family"] for row in rows})
     }
     result = {
-        "schema": "ChatAlchemyModelBaselineRun/v2",
+        "schema": "ChatAlchemyModelBaselineRun/v3",
         "run": {
             "mode": args.mode,
             "model": args.model,
@@ -241,6 +255,7 @@ async def main() -> None:
             "started_at_utc": started.isoformat(),
             "finished_at_utc": finished.isoformat(),
             "git_sha": os.getenv("GITHUB_SHA"),
+            **oracle.metadata(),
         },
         "benchmark": {**manifest, "seed": args.seed},
         "summary": _aggregate(rows),
