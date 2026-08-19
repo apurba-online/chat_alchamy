@@ -14,6 +14,8 @@ BACKEND = ROOT / "backend"
 REQUIRED_FILES = [
     ROOT / "PUBLICATION_PROTOCOL.md",
     ROOT / "PAPER_IMPLEMENTATION.md",
+    ROOT / "REPRODUCIBILITY.md",
+    ROOT / "PUBLICATION_CHECKLIST.md",
     BACKEND / "benchmark" / "BENCHMARK_CARD.md",
     BACKEND / "benchmark" / "EXPERT_EVALUATION.md",
     BACKEND / "benchmark" / "expert_eval_template.csv",
@@ -33,9 +35,12 @@ REQUIRED_FILES = [
     BACKEND / "scripts" / "run_counterfactual.py",
     BACKEND / "scripts" / "run_failure_injection.py",
     BACKEND / "scripts" / "evaluate_conflicts.py",
+    BACKEND / "scripts" / "evaluate_entity_normalization.py",
     BACKEND / "scripts" / "run_external_holdout.py",
     BACKEND / "scripts" / "compare_temporal_runs.py",
     BACKEND / "scripts" / "freeze_external_holdout.py",
+    BACKEND / "scripts" / "make_study_manifest.py",
+    BACKEND / "scripts" / "generate_paper_tables.py",
     BACKEND / "scripts" / "summarize_results.py",
     REPO_ROOT / ".github" / "workflows" / "chatalchemy-live-ci.yml",
     REPO_ROOT / ".github" / "workflows" / "chatalchemy-paper-experiments.yml",
@@ -100,9 +105,26 @@ def validate_protocol_alignment(manifest: dict) -> None:
         raise AssertionError("publication protocol must include the unrestricted same-tools agent baseline")
     if "unrestricted same-tools LLM agent" not in implementation:
         raise AssertionError("implementation record must document the unrestricted same-tools agent baseline")
+
     workflow = (REPO_ROOT / ".github" / "workflows" / "chatalchemy-paper-experiments.yml").read_text()
-    if "baseline_unrestricted_tools" not in workflow:
-        raise AssertionError("paper workflow must expose the unrestricted same-tools baseline")
+    required_workflow_targets = {
+        "baseline_unrestricted_tools",
+        "entity_normalization",
+        "oracle_snapshot",
+        "conflict_eval",
+        "external_holdout",
+        "failure_injection",
+        "counterfactual",
+    }
+    missing_targets = sorted(target for target in required_workflow_targets if target not in workflow)
+    if missing_targets:
+        raise AssertionError(f"paper workflow is missing experiment targets: {missing_targets}")
+
+    benchmark_runner = (BACKEND / "scripts" / "run_live_benchmark.py").read_text()
+    for required_field in ("answer_text", "claims", "source_traces", "oracle_snapshot_hash"):
+        if required_field not in benchmark_runner:
+            raise AssertionError(f"primary benchmark must preserve {required_field} for audit/human evaluation")
+
     if manifest.get("case_count") != 1500:
         raise AssertionError("publication benchmark must contain 1500 task states")
     if manifest.get("task_signature_count") != 1500:
@@ -141,6 +163,8 @@ def main() -> None:
         "split_isolation_gate": "passed",
         "protocol_alignment_gate": "passed",
         "required_same_tools_baseline": "passed",
+        "experiment_coverage_gate": "passed",
+        "human_audit_trace_gate": "passed",
     }
     print(json.dumps(summary, indent=2, default=str))
 
