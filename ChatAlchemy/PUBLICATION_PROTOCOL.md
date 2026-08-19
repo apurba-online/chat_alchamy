@@ -1,122 +1,154 @@
 # ChatAlchemy Publication Protocol
 
-This document defines the pre-specified experimental protocol for the ChatAlchemy paper. Changes that alter task definitions, benchmark splits, primary metrics, or statistical tests after test-set inspection must be documented as post-hoc analyses.
+This is the canonical pre-specified experimental protocol for the ChatAlchemy paper. Changes that alter task definitions, benchmark partitions, primary outcomes, comparison systems, or statistical tests after test-set inspection must be versioned and disclosed as post-hoc changes.
 
 ## Scientific question
 
-ChatAlchemy evaluates whether typed planning, live biomedical database federation, entity normalization, deterministic evidence operations, conflict handling, and claim-level verification improve correctness and grounding when biomedical evidence is distributed across evolving online sources.
+ChatAlchemy evaluates whether typed planning, live biomedical database federation, entity normalization, deterministic evidence operations, contextual conflict handling, and claim-level verification improve correctness and grounding when biomedical evidence is distributed across evolving online sources.
 
-The product UI is a demonstration surface. The scientific contribution is the evidence-state reasoning and evaluation framework.
+The product UI is a demonstration surface. Product functionality is tested end-to-end, but benchmark claims are restricted to capabilities with an independent ground-truth procedure.
 
 ## Benchmark
 
-- Benchmark: `LiveBioEvidenceBench-v2`
+- Benchmark: `LiveBioEvidenceBench-v2.1`
 - Default seed: `1729`
-- Nominal size: `1500` cases
-- Splits: `dev`, `test`, `stress`
-- Entity pools are disjoint across splits.
-- Test/stress examples must not be used for prompt tuning, rule tuning, source-specific bug fixes, or threshold selection.
-- The independent live oracle must not call the ChatAlchemy planner, generator, conflict classifier, or claim verifier.
-- Raw live responses may be stored only as experiment/audit artifacts with retrieval timestamps; they are not an application knowledge base.
+- Nominal size: `1500` task specifications
+- Public partitions: `dev=300`, `test=900`, `stress=300`
+- Drug, target, gene, and condition pools are entity-disjoint across public partitions.
+- A benchmark item is uniquely identified by its **task state**, not only its surface question. Uploaded-data tasks may share wording while carrying different candidate evidence.
+- Each generation emits a SHA-256 fingerprint and manifest.
+- Gold answers are not stored in the benchmark definition. An independent oracle recomputes source-supported answers from live public APIs.
+- The independent oracle must not call ChatAlchemy's planner, final reasoning operation, conflict classifier, or claim verifier.
+- Raw live responses/source records may be retained as timestamped experiment artifacts but are not used as the application's pharmaceutical knowledge base.
 
 ### Development policy
 
-Only `dev` may be used for iterative development. Bugs discovered on `test` or `stress` may be fixed only if the fix is source-contract/general software correctness and is not tailored to a specific test answer. Any such fix must be logged in the paper artifact history and the affected evaluation rerun from scratch.
+Only `dev` is intended for iterative behavior tuning. The public `test` split is the primary reproducible evaluation and `stress` is reported separately. Test/stress failures may motivate general source-contract or software-correctness fixes only when the fix is not tailored to the expected answer; such fixes require a new system version and complete rerun of affected comparisons.
 
-### External holdout
+### Private external holdout
 
-A separate author-independent holdout should be created after architecture freeze. It must remain unavailable to implementation decisions. Before evaluation, record only its count, SHA-256 fingerprint, schema version, and freeze time using `scripts/freeze_external_holdout.py`.
+After architecture freeze, obtain approximately 300 independently authored questions from a biomedical researcher who did not implement the planner. The private holdout should cover the supported evidence operations without copying public benchmark templates. Before evaluation, record only its count, schema, freeze time, and SHA-256 fingerprint using `scripts/freeze_external_holdout.py`. Do not tune prompts, rules, source selection, or thresholds after holdout inspection.
+
+### Broken-problem and oracle-outage policy
+
+Oracle-unavailable cases are never silently converted into correct or incorrect model outcomes. Report oracle coverage separately. Persistent invalid benchmark items identified before freeze may be repaired or replaced with the change documented. A post-freeze invalid item is excluded with an explicit reason and is not replaced in the reported run.
+
+## Oracle-state policy for paired comparisons
+
+Live truth can change. Therefore method comparisons use one of two acceptable designs:
+
+1. **same-iteration pairing**: the independent oracle is executed once for a case and all compared systems/ablations are scored against that result; or
+2. **frozen oracle snapshot**: build a versioned `LiveBioOracleSnapshot/v1` artifact and score all compared systems against the same fingerprint-matched snapshot.
+
+A refreshed snapshot is created only when temporal change is intentionally being measured.
 
 ## Systems compared
 
-Primary comparisons should use the same test items and, where applicable, the same live-source retrieval time window.
+Minimum comparison matrix:
 
-1. `LLM-only`: model receives the question without tool evidence.
-2. `Same-retrieval LLM`: model receives the evidence retrieved by ChatAlchemy but performs the reasoning/generation itself.
-3. `Unrestricted tool agent`: same available source set, but tool selection/combination is delegated to the model.
-4. `ChatAlchemy full`: typed planner + normalization + deterministic operations + conflict handling + verification.
-5. Component ablations:
-   - no normalization
-   - no deterministic join
-   - no conflict analysis
-   - no verifier
+1. `LLM-only`: same question, no retrieved live evidence.
+2. `Same-retrieval LLM`: receives the evidence objects retrieved for ChatAlchemy but performs the final composition itself instead of using ChatAlchemy's deterministic result.
+3. `ChatAlchemy full`.
+4. Component ablations:
+   - no entity normalization;
+   - no deterministic cross-source join;
+   - no conflict analysis;
+   - no claim verifier.
 
-If an external biomedical agent can be reproduced with overlapping source/task coverage, report it separately and describe coverage differences rather than forcing incomparable aggregate scores.
+A reproducible unrestricted tool-agent or external biomedical-agent baseline should be reported when source/task coverage is sufficiently comparable. Coverage and tool-budget differences must be described rather than hidden in one aggregate number.
+
+The model-baseline harness evaluates ChatAlchemy-full and the model baseline on every case against the same oracle state, making the main comparison paired by construction.
 
 ## Primary outcomes
 
 Primary endpoint:
-- mean task score on the frozen `test` split.
+- mean task score on frozen public `test`.
 
 Co-primary reliability outcomes:
-- supported-claim rate
-- source execution success
-- oracle coverage
+- oracle coverage;
+- live-source execution success;
+- provenance record F1 against the independent oracle source trace;
+- claim-producing rate;
+- supported-claim rate conditional on cases that actually produce claims;
+- fully-supported claim-case rate.
 
 Secondary outcomes:
-- set F1 / structured record accuracy by task family
-- routing accuracy
-- entity normalization accuracy
-- attribution precision
-- abstention precision
-- conflict macro-F1
-- Grounded Obedience Score (GOS)
-- Parametric Memory Intrusion Rate (PMIR)
-- p50/p95 latency
-- API calls per question
-- token and monetary cost where model APIs are used
+- set F1 / structured-record score by task family;
+- routing accuracy;
+- entity-normalization accuracy where annotated;
+- conflict classification macro-F1 on the manually annotated conflict set;
+- appropriate abstention/qualification under source failure;
+- Grounded Obedience Score (GOS);
+- Parametric Memory Intrusion Rate (PMIR);
+- median and p95 latency;
+- API calls/evidence items per question;
+- token and monetary cost when model APIs are used.
 
-`stress` is reported separately and must not be pooled into the primary test score.
+A verifier score of 1.0 on a case with zero claims must not be interpreted as perfect grounding. Claim coverage and claim support are always reported together.
 
-## Statistics
+`stress` is reported separately and is not pooled into the primary `test` endpoint.
 
-For paired system comparisons on continuous per-case scores:
-- report the paired mean difference with 95% paired-bootstrap CI (10,000 resamples).
+## Ablation protocol
+
+The ablation runner executes the independent oracle once per case and scores all variants against that shared result. The default set is full, no-normalization, no-deterministic-join, no-conflict, and no-verifier. Report case-level paired effects and family-level results in addition to aggregate performance.
+
+## Source-failure robustness
+
+Fault injection occurs only at ChatAlchemy's source-adapter boundary and never modifies an upstream API. For each tested source and fault mode (`exception` or `empty`), run an unperturbed control and injected system on the same case and oracle state. Report score degradation, failure-trace visibility, qualification/abstention, and unsupported-claim case rate.
+
+## Counterfactual grounding
+
+Counterfactual evidence experiments are synthetic evaluation-only tests. External biomedical APIs are never altered. The default suite contains 120 deterministic cases spanning mechanism, regulatory, target-relation, and trial-status reversals. Each case is run in paired question-only and evidence-constrained conditions. Report GOS, PMIR, paired GOS gain, and paired PMIR reduction.
+
+## Temporal evaluation
+
+At repeated timepoints `T0...Tk`, reuse the same benchmark fingerprint/case IDs and create a new independent oracle snapshot. For cases whose oracle-supported answer changes, report temporal adaptation accuracy. Distinguish genuine source-state changes from source outage/schema failure using source records, timestamps, and snapshot hashes. Do not change the system between timepoints unless a new system version is explicitly evaluated.
+
+## Human expert evaluation
+
+After automatic experiments are frozen, sample 150-200 answers stratified by task family and difficulty. Use 2-3 independent biomedical reviewers. Randomize/blind system identity. Reviewers score factual correctness, evidence grounding, completeness, appropriate uncertainty, and scientific usefulness on fixed 1-5 rubrics, plus a binary research-starting-point item. Preserve raw ratings and report inter-rater agreement before adjudication.
+
+This is an evaluation of biomedical **research assistance**, not autonomous clinical decision making.
+
+## Statistical analysis
+
+For paired continuous per-case scores:
+- report paired mean difference with 95% paired-bootstrap CI using 10,000 resamples.
 
 For paired binary exact-correct outcomes:
 - use exact McNemar testing.
 
-For multiple pre-specified pairwise hypothesis tests:
-- control family-wise error with Holm-Bonferroni.
+For multiple pre-specified pairwise hypotheses:
+- use Holm-Bonferroni family-wise error correction.
 
-Report effect sizes and confidence intervals in addition to p-values. Do not report significance when oracle coverage differs materially without also reporting a common-case analysis.
+Report effect sizes and confidence intervals in addition to p-values. If oracle coverage differs materially, also report a common-case comparison.
 
-## Temporal evaluation
+## Reproducibility record
 
-At repeated time points `T0...Tk`, rerun the same frozen case IDs and independent oracle. For cases whose oracle answer changes, report temporal adaptation accuracy: the fraction for which the system changes to the new oracle-supported answer. Also report source outages separately from semantic answer changes.
+Every reported run must preserve:
+- Git commit SHA;
+- benchmark version, seed, fingerprint, and selected split/difficulty;
+- task IDs/signatures;
+- oracle mode (live or frozen snapshot) and snapshot file hash when used;
+- system/ablation configuration;
+- model/provider/exact model identifier and prompt version when applicable;
+- result limits/retry policy;
+- UTC start/end times;
+- per-case oracle outputs, source record IDs, and snapshot hashes;
+- per-case predictions and traces;
+- aggregate outputs generated from the raw cases.
 
-## Counterfactual grounding
-
-Counterfactual evidence experiments are evaluation-only. They must not alter external APIs. The model is explicitly instructed to use the supplied evidence. Report GOS and PMIR and preserve the injected evidence, expected answer, and forbidden-memory answer in the experiment artifact.
-
-## Human evaluation
-
-Use 2-3 biomedical reviewers on a blinded, randomized subset of 150-200 responses. Reviewers score factual correctness, evidence grounding, completeness, appropriate uncertainty, and scientific usefulness on fixed 1-5 rubrics. Collect ratings independently before adjudication. Report inter-rater agreement and system identity must remain hidden during initial scoring.
-
-## Reproducibility
-
-Every result artifact must include:
-- benchmark version and seed
-- split and difficulty filters
-- git commit SHA
-- model/provider and exact model identifier
-- prompt version
-- run start/end UTC timestamps
-- source trace timestamps
-- configured ablation flags
-- software/runtime versions when available
-- aggregate and per-case results
-
-Final paper tables must be generated from saved result artifacts, not manually transcribed.
+Full benchmark runs are deterministically sharded and merged only after validating fingerprint, run configuration, shard coverage, and duplicate IDs. Final paper tables/figures must be generated from saved artifacts rather than manually transcribed.
 
 ## Freeze criteria
 
-The architecture is considered frozen when:
-- offline tests pass
-- live source contract tests pass
-- frontend typecheck/build pass
-- benchmark leakage tests pass
-- preview smoke tests pass
-- no known high-severity security issue remains
+The architecture is frozen only when:
+- offline unit/mocked integration tests pass;
+- live source contract tests pass;
+- benchmark generation, leakage, task-signature, and fingerprint gates pass;
+- frontend strict TypeScript and production build pass;
+- preview/API smoke tests pass;
+- no known high-severity security issue remains;
+- the public test/stress evaluation protocol and primary hypotheses are fixed.
 
-After freeze, modifications that change model behavior require a new experiment version and complete rerun of all affected primary comparisons.
+After freeze, any behavior-changing modification creates a new experiment version and requires complete rerun of affected primary comparisons.
