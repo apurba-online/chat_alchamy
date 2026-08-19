@@ -10,12 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, validate_cases
+from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, select_cases, validate_cases
 from chatalchemy.llm import LLMClient
 from chatalchemy.reasoning import ChatAlchemyEngine
 from scripts.run_live_benchmark import user_evidence
 
-PROMPT_VERSION = "model-baseline-v1"
+PROMPT_VERSION = "model-baseline-v2"
+PUBLIC_BENCHMARK_N = 1500
 
 
 def _schema(case) -> dict[str, Any]:
@@ -101,6 +102,7 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_task_score": statistics.mean(scored) if scored else None,
         "median_latency_ms": statistics.median(float(row["latency_ms"]) for row in rows) if rows else 0.0,
         "model_error_rate": statistics.mean(bool(row.get("model_error")) for row in rows) if rows else 0.0,
+        "retrieval_error_rate": statistics.mean(bool(row.get("retrieval_error")) for row in rows) if rows else 0.0,
     }
 
 
@@ -108,10 +110,12 @@ async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["llm_only", "same_retrieval_llm"], required=True)
     parser.add_argument("--model", default=os.getenv("OPENAI_MODEL", "gpt-5-mini"))
-    parser.add_argument("--n", type=int, default=150)
     parser.add_argument("--seed", type=int, default=1729)
     parser.add_argument("--split", choices=["dev", "test", "stress", "all"], default="test")
     parser.add_argument("--difficulty", choices=["easy", "medium", "hard", "all"], default="all")
+    parser.add_argument("--limit", type=int, default=150, help="0 means all selected frozen benchmark cases")
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--max-results", type=int, default=20)
     parser.add_argument("--out", default="benchmark/model-baseline.json")
     args = parser.parse_args()
@@ -121,13 +125,16 @@ async def main() -> None:
     if not llm.available:
         raise SystemExit("OPENAI_API_KEY must be configured on the runner; no browser credential is supported")
 
-    all_cases = generate_cases(args.n, args.seed)
+    all_cases = generate_cases(PUBLIC_BENCHMARK_N, args.seed)
     manifest = validate_cases(all_cases)
-    cases = [
-        case for case in all_cases
-        if (args.split == "all" or case.split == args.split)
-        and (args.difficulty == "all" or case.difficulty == args.difficulty)
-    ]
+    cases = select_cases(
+        all_cases,
+        split=args.split,
+        difficulty=args.difficulty,
+        limit=None if args.limit == 0 else args.limit,
+        num_shards=args.num_shards,
+        shard_index=args.shard_index,
+    )
     if not cases:
         raise SystemExit("No cases matched the requested filters")
 
@@ -190,6 +197,7 @@ async def main() -> None:
             rows.append(
                 {
                     "id": case.id,
+                    "task_signature": case.task_signature,
                     "split": case.split,
                     "difficulty": case.difficulty,
                     "family": case.family,
@@ -218,7 +226,7 @@ async def main() -> None:
         for family in sorted({row["family"] for row in rows})
     }
     result = {
-        "schema": "ChatAlchemyModelBaselineRun/v1",
+        "schema": "ChatAlchemyModelBaselineRun/v2",
         "run": {
             "mode": args.mode,
             "model": args.model,
@@ -226,6 +234,10 @@ async def main() -> None:
             "seed": args.seed,
             "split_filter": args.split,
             "difficulty_filter": args.difficulty,
+            "limit": args.limit,
+            "num_shards": args.num_shards,
+            "shard_index": args.shard_index,
+            "max_results": args.max_results,
             "started_at_utc": started.isoformat(),
             "finished_at_utc": finished.isoformat(),
             "git_sha": os.getenv("GITHUB_SHA"),
