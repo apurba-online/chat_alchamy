@@ -7,7 +7,7 @@ import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 
-from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, select_cases, validate_cases
+from chatalchemy.benchmark import EvaluationOracle, generate_cases, score_value, select_cases, validate_cases
 from chatalchemy.reasoning import ChatAlchemyEngine
 from scripts.run_live_benchmark import prediction, provenance_record_f1, user_evidence
 
@@ -40,7 +40,11 @@ async def main() -> None:
     parser.add_argument("--seed", type=int, default=1729)
     parser.add_argument("--split", choices=["dev", "test", "stress", "all"], default="dev")
     parser.add_argument("--difficulty", choices=["easy", "medium", "hard", "all"], default="all")
-    parser.add_argument("--limit", type=int, default=128, help="0 means all cases after filtering")
+    parser.add_argument("--limit", type=int, default=128, help="0 means all cases after filtering/sharding")
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--max-results", type=int, default=20)
+    parser.add_argument("--oracle-snapshot", default=None)
     parser.add_argument("--variants", nargs="*", choices=list(VARIANTS), default=list(VARIANTS))
     parser.add_argument("--out", default="benchmark/ablations.json")
     args = parser.parse_args()
@@ -52,25 +56,24 @@ async def main() -> None:
         split=args.split,
         difficulty=args.difficulty,
         limit=None if args.limit == 0 else args.limit,
+        num_shards=args.num_shards,
+        shard_index=args.shard_index,
     )
     if not cases:
         raise SystemExit("No benchmark cases matched the requested filters")
 
     engines = {name: ChatAlchemyEngine(**VARIANTS[name]) for name in args.variants}
-    oracle = LiveOracle()
+    oracle = EvaluationOracle(
+        benchmark_fingerprint=manifest["fingerprint_sha256"],
+        snapshot_path=args.oracle_snapshot,
+    )
     rows_by_variant: dict[str, list[dict]] = {name: [] for name in args.variants}
     started = datetime.now(timezone.utc)
     try:
         for case in cases:
-            gold = None
-            oracle_error = None
-            try:
-                gold = await oracle.execute(case)
-            except Exception as exc:
-                oracle_error = f"{type(exc).__name__}: {exc}"
-
+            gold, oracle_error = await oracle.get(case)
             for name, engine in engines.items():
-                response = await engine.answer(case.question, user_evidence=user_evidence(case))
+                response = await engine.answer(case.question, max_results=args.max_results, user_evidence=user_evidence(case))
                 pred = prediction(case, response)
                 score = score_value(gold.kind, pred, gold.value) if gold is not None else None
                 oracle_records = gold.source_records if gold is not None else []
@@ -81,6 +84,7 @@ async def main() -> None:
                 rows_by_variant[name].append(
                     {
                         "id": case.id,
+                        "task_signature": case.task_signature,
                         "split": case.split,
                         "difficulty": case.difficulty,
                         "family": case.family,
@@ -117,7 +121,7 @@ async def main() -> None:
         )
 
     result = {
-        "schema": "ChatAlchemyAblationRun/v2",
+        "schema": "ChatAlchemyAblationRun/v3",
         "run": {
             "started_at_utc": started.isoformat(),
             "finished_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -125,7 +129,12 @@ async def main() -> None:
             "split_filter": args.split,
             "difficulty_filter": args.difficulty,
             "limit": args.limit,
-            "oracle_snapshot_policy": "one independent live oracle execution per case shared across all variants",
+            "num_shards": args.num_shards,
+            "shard_index": args.shard_index,
+            "max_results": args.max_results,
+            "variants": args.variants,
+            **oracle.metadata(),
+            "oracle_snapshot_policy": "one oracle result per case shared across all variants",
         },
         "benchmark": {**manifest, "seed": args.seed},
         "systems": systems,
