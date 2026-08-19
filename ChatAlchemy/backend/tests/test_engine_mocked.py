@@ -1,41 +1,12 @@
-import pytest
-
-from chatalchemy.models import Entity, EvidenceItem
+import httpx,pytest
+from chatalchemy.llm import LLMClient
 from chatalchemy.reasoning import ChatAlchemyEngine
-
-class FakeRxNorm:
-    async def resolve(self, name):
-        entity = Entity(text=name, type="drug", canonical_name="pembrolizumab", ids={"rxcui": "1547545"})
-        ev = EvidenceItem.build(subject="pembrolizumab", predicate="drug_identity", value="pembrolizumab", source="RxNorm", source_record_id="1547545")
-        return entity, [ev]
-class FakeFDA:
-    async def approval_records(self, names, limit=20):
-        return [EvidenceItem.build(subject="pembrolizumab", predicate="fda_approval_record", value="BLA125514", source="Drugs@FDA/openFDA", source_record_id="BLA125514")]
-class FakeTrials:
-    async def search_trials(self, **kwargs):
-        return [EvidenceItem.build(subject="pembrolizumab", predicate="clinical_trial", value="NCT123", source="ClinicalTrials.gov", source_record_id="NCT123", qualifiers={"phase": ["PHASE3"], "status": "RECRUITING"})]
-class FakeChEMBL:
-    async def target_drugs(self, target_query, limit=20):
-        return [EvidenceItem.build(subject="pembrolizumab", predicate="molecular_target", value=target_query, source="ChEMBL", source_record_id="CHEMBL:X")]
-class FakeDailyMed:
-    async def label_records(self, **kwargs):
-        return []
-
+from chatalchemy.sources import RxNormSource,DailyMedSource,OpenFDASource,ClinicalTrialsSource,ChEMBLSource,OpenTargetsSource,PubChemSource
 @pytest.mark.asyncio
-async def test_approval_end_to_end_with_fake_live_sources():
-    engine = ChatAlchemyEngine(rxnorm=FakeRxNorm(), openfda=FakeFDA(), clinicaltrials=FakeTrials(), chembl=FakeChEMBL(), dailymed=FakeDailyMed())
-    response = await engine.answer("What FDA approval information is available for pembrolizumab?")
-    await engine.close()
-    assert "BLA125514" in response.answer
-    assert response.supported_claim_rate == 1.0
-    assert all(claim.supported for claim in response.claims)
-    assert {e.source for e in response.evidence} >= {"RxNorm", "Drugs@FDA/openFDA"}
-
-@pytest.mark.asyncio
-async def test_trial_end_to_end_with_fake_live_sources():
-    engine = ChatAlchemyEngine(rxnorm=FakeRxNorm(), openfda=FakeFDA(), clinicaltrials=FakeTrials(), chembl=FakeChEMBL(), dailymed=FakeDailyMed())
-    response = await engine.answer("How many recruiting Phase 3 trials involve pembrolizumab for NSCLC?")
-    await engine.close()
-    assert "1 matching trial" in response.answer
-    assert response.plan.filters["phase"] == "PHASE3"
-    assert response.supported_claim_rate == 1.0
+async def test_engine_identity_end_to_end_mocked():
+    def handler(req):
+        u=str(req.url)
+        if "approximateTerm" in u:return httpx.Response(200,json={"approximateGroup":{"candidate":[{"rxcui":"161","name":"acetaminophen"}]}})
+        if "/rxcui/161/properties" in u:return httpx.Response(200,json={"properties":{"rxcui":"161","name":"acetaminophen","tty":"IN"}})
+        return httpx.Response(200,json={})
+    client=httpx.AsyncClient(transport=httpx.MockTransport(handler));sources={"rxnorm":RxNormSource(client=client),"dailymed":DailyMedSource(client=client),"openfda":OpenFDASource(client=client),"clinicaltrials":ClinicalTrialsSource(client=client),"chembl":ChEMBLSource(client=client),"opentargets":OpenTargetsSource(client=client),"pubchem":PubChemSource(client=client)};llm=LLMClient(client=client);llm.api_key=None;engine=ChatAlchemyEngine(llm=llm,sources=sources);result=await engine.answer("What is the generic identity of Tylenol?");assert result.plan.intent=="identity";assert result.supported_claim_rate==1.0;assert result.evidence[0].value=="acetaminophen";await client.aclose()

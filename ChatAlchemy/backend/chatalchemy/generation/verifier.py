@@ -1,17 +1,6 @@
 from __future__ import annotations
-
-from ..models import Claim, EvidenceItem
-
-
-class ClaimVerifier:
-    def verify(self, claims: list[Claim], evidence: list[EvidenceItem]) -> list[Claim]:
-        valid_ids = {e.id for e in evidence}
-        for claim in claims:
-            claim.supported = bool(claim.support_ids) and all(sid in valid_ids for sid in claim.support_ids)
-        return claims
-
-    @staticmethod
-    def supported_rate(claims: list[Claim]) -> float:
-        if not claims:
-            return 1.0
-        return sum(1 for c in claims if c.supported) / len(claims)
+from ..models import Claim,EvidenceItem
+def verify_claims(claims:list[Claim],evidence:list[EvidenceItem]):
+    ids={e.id for e in evidence};verified=[]
+    for c in claims:verified.append(c.model_copy(update={"supported":bool(c.support_ids) and all(s in ids for s in c.support_ids)}))
+    return verified,(sum(c.supported for c in verified)/len(verified) if verified else 1.0)

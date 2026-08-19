@@ -1,3 +1,2 @@
-from .verifier import ClaimVerifier
-
-__all__ = ["ClaimVerifier"]
+from .verifier import verify_claims
+__all__=["verify_claims"]

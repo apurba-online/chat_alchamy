@@ -7,13 +7,28 @@
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
   }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+  }
 }
 
 @layer base {
   * {
-    @apply border-gray-200;
+    @apply border-gray-200 dark:border-gray-700;
   }
   body {
-    @apply bg-white text-gray-900;
+    @apply bg-white text-gray-900 dark:bg-gray-900 dark:text-gray-100;
+    overflow-x: hidden;
   }
 }
+
+.drawer-enter { transform: translateX(-100%); }
+.drawer-enter-active { transform: translateX(0); transition: transform 300ms; }
+.drawer-exit { transform: translateX(0); }
+.drawer-exit-active { transform: translateX(-100%); transition: transform 300ms; }
+.backdrop-enter { opacity: 0; }
+.backdrop-enter-active { opacity: 0.5; transition: opacity 300ms; }
+.backdrop-exit { opacity: 0.5; }
+.backdrop-exit-active { opacity: 0; transition: opacity 300ms; }

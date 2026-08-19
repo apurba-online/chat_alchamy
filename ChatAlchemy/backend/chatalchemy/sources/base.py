@@ -1,53 +1,38 @@
 from __future__ import annotations
-
-import asyncio
-import time
+import asyncio,time
 from typing import Any
-
 import httpx
-
-
-class SourceError(RuntimeError):
-    pass
-
-
+from ..models import SourceTrace
 class LiveSource:
-    name = "source"
-
-    def __init__(self, client: httpx.AsyncClient, *, min_interval: float = 0.0, retries: int = 2):
-        self.client = client
-        self.min_interval = min_interval
-        self.retries = retries
-        self._last_call = 0.0
-        self._lock = asyncio.Lock()
-
-    async def _throttle(self) -> None:
-        if self.min_interval <= 0:
-            return
-        async with self._lock:
-            elapsed = time.monotonic() - self._last_call
-            wait = self.min_interval - elapsed
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last_call = time.monotonic()
-
-    async def get_json(self, url: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        last_error: Exception | None = None
-        for attempt in range(self.retries + 1):
-            await self._throttle()
+    name="source";base_url=""
+    def __init__(self,client:httpx.AsyncClient|None=None,timeout:float=20.0):
+        self._owns_client=client is None;self.client=client or httpx.AsyncClient(timeout=timeout,headers={"User-Agent":"ChatAlchemy-Live/1.0","Cache-Control":"no-cache"},follow_redirects=True)
+    async def close(self):
+        if self._owns_client: await self.client.aclose()
+    async def _get(self,url:str,*,params:dict[str,Any]|None=None,attempts:int=3)->dict[str,Any]:
+        last=None
+        for attempt in range(attempts):
             try:
-                response = await self.client.get(url, params=params, headers={"Cache-Control": "no-cache", "Pragma": "no-cache"})
-                if response.status_code == 404:
-                    return {}
-                if response.status_code == 429 or response.status_code >= 500:
-                    if attempt < self.retries:
-                        await asyncio.sleep(0.5 * (2**attempt))
-                        continue
-                response.raise_for_status()
-                return response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                last_error = exc
-                if attempt < self.retries:
-                    await asyncio.sleep(0.5 * (2**attempt))
-                    continue
-        raise SourceError(f"{self.name} request failed: {last_error}")
+                r=await self.client.get(url,params=params)
+                if r.status_code==429 and attempt<attempts-1:await asyncio.sleep(0.5*(2**attempt));continue
+                r.raise_for_status();return r.json()
+            except Exception as exc:
+                last=exc
+                if attempt<attempts-1:await asyncio.sleep(0.3*(2**attempt))
+        assert last is not None;raise last
+    async def _post_json(self,url:str,payload:dict[str,Any],attempts:int=3)->dict[str,Any]:
+        last=None
+        for attempt in range(attempts):
+            try:
+                r=await self.client.post(url,json=payload)
+                if r.status_code==429 and attempt<attempts-1:await asyncio.sleep(0.5*(2**attempt));continue
+                r.raise_for_status();return r.json()
+            except Exception as exc:
+                last=exc
+                if attempt<attempts-1:await asyncio.sleep(0.3*(2**attempt))
+        assert last is not None;raise last
+    async def traced(self,operation:str,coro):
+        started=time.perf_counter()
+        try:
+            result=await coro;count=len(result) if isinstance(result,list) else int(bool(result));return result,SourceTrace(source=self.name,operation=operation,ok=True,latency_ms=(time.perf_counter()-started)*1000,result_count=count)
+        except Exception as exc:return [],SourceTrace(source=self.name,operation=operation,ok=False,latency_ms=(time.perf_counter()-started)*1000,error=str(exc))
