@@ -120,6 +120,13 @@ class RuleBasedPlanner:
 
     @staticmethod
     def _condition(q: str):
+        if any(token in q.lower() for token in ["trial", "studies", "clinicaltrials"]):
+            terminal = re.search(r".*\b(?:for|in)\s+(.+?)(?:\?|$)", q, re.I)
+            if terminal:
+                text = terminal.group(1).strip(" .?")
+                if text and not text.lower().startswith(("my uploaded", "uploaded")):
+                    return text
+
         explicit_patterns = [
             r"(?:trials?|studies)\s+(?:for|of)\s+[^?]+?\s+in\s+(.+?)(?:\?|$)",
             r"(?:trials?|studies)\s+(?:involving|using|use|uses)\s+[^?]+?\s+(?:for|in)\s+(.+?)(?:\?|$)",
