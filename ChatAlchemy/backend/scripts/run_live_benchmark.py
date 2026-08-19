@@ -204,6 +204,12 @@ async def main():
                     "api_calls": len(response.traces),
                     "evidence_count": len(response.evidence),
                     "claim_count": len(response.claims),
+                    "conflict_count": len(response.conflicts),
+                    "warning_count": len(response.warnings),
+                    "answer_text": response.answer,
+                    "claims": [claim.model_dump() for claim in response.claims],
+                    "conflicts": [conflict.model_dump() for conflict in response.conflicts],
+                    "source_traces": [trace.model_dump() for trace in response.traces],
                     "oracle_available": oracle_available,
                     "oracle_error": oracle_error,
                     "oracle": gold.value if gold is not None else None,
@@ -221,7 +227,7 @@ async def main():
 
     run_finished = datetime.now(timezone.utc)
     result = {
-        "schema": "ChatAlchemyBenchmarkRun/v3",
+        "schema": "ChatAlchemyBenchmarkRun/v4",
         "run": {
             "started_at_utc": run_started.isoformat(),
             "finished_at_utc": run_finished.isoformat(),
