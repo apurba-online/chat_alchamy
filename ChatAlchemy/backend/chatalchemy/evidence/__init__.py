@@ -1,3 +1,3 @@
-from .conflict import ConflictEngine
+from .conflict import assess_conflicts
 
-__all__ = ["ConflictEngine"]
+__all__ = ["assess_conflicts"]

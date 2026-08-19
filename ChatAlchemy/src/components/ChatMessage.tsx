@@ -1,55 +1,11 @@
-import React from 'react';
-import { User, FlaskRound as Flask, ExternalLink } from 'lucide-react';
-import { Message } from '../types';
+import { User, FlaskRound as Flask, ExternalLink, ShieldCheck, AlertTriangle } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import type { Message } from '../types';
+import { DataTable } from './DataTable';
+import { DataVisualization } from './DataVisualization';
 
-interface ChatMessageProps {
-  message: Message;
-}
-
-export function ChatMessage({ message }: ChatMessageProps) {
-  const isUser = message.role === 'user';
-  const uniqueSources = message.provenance
-    ? Array.from(new Map(message.provenance.map((item) => [item.source, item])).values())
-    : [];
-
-  return (
-    <div className={`py-8 ${isUser ? 'bg-white/50' : 'bg-white/80'}`}>
-      <div className="max-w-3xl mx-auto flex gap-6 px-4">
-        <div className="w-8 h-8 flex-shrink-0">
-          {isUser ? (
-            <User className="w-full h-full text-gray-600" />
-          ) : (
-            <Flask className="w-full h-full text-purple-600" />
-          )}
-        </div>
-        <div className="flex-1 space-y-2 min-w-0">
-          <p className="font-medium text-sm text-gray-600">{isUser ? 'You' : 'Chat Alchemy'}</p>
-          <div className="prose prose-purple max-w-none whitespace-pre-wrap">{message.content}</div>
-
-          {!isUser && uniqueSources.length > 0 && (
-            <div className="pt-1 text-xs text-gray-400 flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span>Sources:</span>
-              {uniqueSources.map((item, index) => (
-                <React.Fragment key={`${item.source}-${item.id}`}>
-                  {index > 0 && <span>·</span>}
-                  {item.url ? (
-                    <a href={item.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:text-purple-600">
-                      {item.source}
-                      <ExternalLink className="h-3 w-3" />
-                    </a>
-                  ) : (
-                    <span>{item.source}</span>
-                  )}
-                </React.Fragment>
-              ))}
-            </div>
-          )}
-
-          {!isUser && message.warnings && message.warnings.length > 0 && (
-            <div className="text-xs text-amber-700">{message.warnings.join(' ')}</div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+export function ChatMessage({message,darkMode=false}:{message:Message;darkMode?:boolean}){
+  const isUser=message.role==='user';
+  const clickQuestion=(line:string)=>window.dispatchEvent(new CustomEvent('question-click',{detail:{question:line.replace(/^\[Q\d+\]\s*/,'').trim()}}));
+  return <div className={`py-6 ${isUser?(darkMode?'bg-gray-800/50':'bg-white/50'):(darkMode?'bg-gray-800/80':'bg-white/80')}`}><div className="mx-auto flex max-w-[95%] gap-4"><div className={`mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${isUser?'bg-gray-200 dark:bg-gray-700':'bg-purple-100 dark:bg-purple-900'}`}>{isUser?<User className="h-5 w-5 text-gray-600 dark:text-gray-300"/>:<Flask className="h-5 w-5 text-purple-600 dark:text-purple-400"/>}</div><div className="min-w-0 flex-1 space-y-3"><div className="flex flex-wrap items-center gap-2"><span className="text-sm text-gray-600 dark:text-gray-300">{isUser?'You':'ChatAlchemy'}</span>{!isUser&&message.supportRate!==undefined&&<span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 text-xs text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"><ShieldCheck className="h-3 w-3"/>{Math.round(message.supportRate*100)}% claim support</span>}</div><div className="prose max-w-none dark:prose-invert">{message.content.split('\n').map((line,i)=>/^\[Q\d+\]/.test(line)?<button key={i} onClick={()=>clickQuestion(line)} className="mb-2 block w-full rounded-lg p-2 text-left text-purple-700 hover:bg-purple-50 dark:text-purple-300 dark:hover:bg-purple-950/30">{line}</button>:<ReactMarkdown key={i}>{line}</ReactMarkdown>)}</div>{message.tableData&&<DataTable {...message.tableData}/>} {message.chartData&&<DataVisualization data={message.chartData}/>} {!isUser&&message.provenance?.length?<div className="flex flex-wrap gap-2 border-t pt-3 dark:border-gray-700"><span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Live sources</span>{message.provenance.slice(0,15).map(p=>p.url?<a key={`${p.source}-${p.recordId||p.id}`} href={p.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs text-gray-600 hover:text-purple-600 dark:border-gray-700 dark:text-gray-300">{p.source}{p.recordId?` · ${p.recordId}`:''}<ExternalLink className="h-3 w-3"/></a>:null)}</div>:null}{!isUser&&message.warnings?.length?<div className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200"><AlertTriangle className="h-4 w-4 shrink-0"/><span>{message.warnings.join(' ')}</span></div>:null}</div></div></div>;
 }

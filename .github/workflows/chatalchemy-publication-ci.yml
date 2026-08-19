@@ -1,22 +1,42 @@
 name: ChatAlchemy publication CI
-on: [push, pull_request]
+
+on:
+  push:
+    branches: [agent/chatalchemy-publication]
+  pull_request:
+  workflow_dispatch:
+
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
+        with:
+          python-version: '3.12'
       - run: pip install -r ChatAlchemy/backend/requirements.txt pytest pytest-asyncio
       - run: cd ChatAlchemy && PYTHONPATH=backend pytest -q backend/tests -m 'not live'
       - run: cd ChatAlchemy && python backend/scripts/generate_benchmark.py --output /tmp/livebioevidencebench.yaml
       - run: python -c "import yaml; x=yaml.safe_load(open('/tmp/livebioevidencebench.yaml')); assert len(x)==1500"
+
   frontend-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: {node-version: '20', cache: 'npm', cache-dependency-path: 'ChatAlchemy/package-lock.json'}
-      - run: cd ChatAlchemy && npm ci
-      - run: cd ChatAlchemy && npx tsc -p tsconfig.app.json --noEmit
+        with:
+          node-version: '20'
+      - run: cd ChatAlchemy && npm install
+      - run: cd ChatAlchemy && npm run typecheck
       - run: cd ChatAlchemy && npm run build
+
+  live-contracts:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r ChatAlchemy/backend/requirements.txt pytest pytest-asyncio
+      - run: cd ChatAlchemy && RUN_LIVE_TESTS=1 PYTHONPATH=backend pytest -q backend/tests -m live

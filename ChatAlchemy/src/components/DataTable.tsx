@@ -1,48 +1,13 @@
-import React from 'react';
+import { useState } from 'react';
+import { Download, ExternalLink } from 'lucide-react';
+import { DiseaseModal } from './DiseaseModal';
+import { Modal } from './Modal';
+import { downloadBlob, exportTableXlsx } from '../lib/api';
 
-interface DataTableProps {
-  headers: string[];
-  rows: any[][];
-  caption?: string;
-}
-
-export function DataTable({ headers, rows, caption }: DataTableProps) {
-  return (
-    <div className="w-full max-w-3xl mx-auto p-4 bg-white rounded-lg shadow-md overflow-x-auto">
-      <table className="min-w-full divide-y divide-gray-200">
-        {caption && (
-          <caption className="p-5 text-lg font-semibold text-left text-gray-900 bg-white">
-            {caption}
-          </caption>
-        )}
-        <thead className="bg-gray-50">
-          <tr>
-            {headers.map((header, index) => (
-              <th
-                key={index}
-                scope="col"
-                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-              >
-                {header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="bg-white divide-y divide-gray-200">
-          {rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
-              {row.map((cell, cellIndex) => (
-                <td
-                  key={cellIndex}
-                  className="px-6 py-4 whitespace-nowrap text-sm text-gray-500"
-                >
-                  {cell}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+interface Props { headers: string[]; rows: unknown[][]; caption?: string; }
+export function DataTable({ headers, rows, caption }: Props) {
+  const [all, setAll] = useState(false); const [disease, setDisease] = useState<string | null>(null); const [gene, setGene] = useState<{ id: string; name: string } | null>(null); const [exporting, setExporting] = useState(false); const displayed = all ? rows : rows.slice(0, 10); const ensemblIndex = headers.findIndex(h => /ensembl/i.test(h)); const geneIndex = headers.findIndex(h => /gene symbol|^gene$/i.test(h));
+  const exportExcel = async () => { setExporting(true); try { downloadBlob(await exportTableXlsx({ headers, rows, caption }), 'chatalchemy-results.xlsx'); } finally { setExporting(false); } };
+  const render = (cell: unknown, row: unknown[], idx: number) => { const value = String(cell ?? ''); if (idx === geneIndex && ensemblIndex >= 0) { const id = String(row[ensemblIndex] ?? ''); return <button className="font-medium text-blue-600 hover:underline dark:text-blue-400" onClick={() => id && setGene({ id, name: value })}>{value.toUpperCase()}</button>; } const efo = value.match(/\b(EFO_\d+|MONDO_\d+|OTAR_\w+)\b/); if (efo) return <span>{value.split(efo[0])[0]} <button className="text-purple-600 hover:underline dark:text-purple-400" onClick={() => setDisease(efo[0])}>[{efo[0]}]</button></span>; if (/^ENSG\d+$/i.test(value)) return <a className="inline-flex items-center gap-1 text-purple-600 hover:underline dark:text-purple-400" href={`https://ensembl.org/Homo_sapiens/Gene/Summary?g=${encodeURIComponent(value)}`} target="_blank" rel="noreferrer">{value}<ExternalLink className="h-3 w-3" /></a>; return value; };
+  return <><div className="overflow-x-auto rounded-xl border border-gray-100 bg-white p-4 dark:border-gray-700 dark:bg-gray-800"><div className="mb-3 flex items-center justify-between"><h3 className="font-semibold text-gray-900 dark:text-gray-100">{caption || 'Results'}</h3><button onClick={() => void exportExcel()} disabled={exporting} title="Export to Excel" className="p-2 text-gray-500 hover:text-purple-600 disabled:opacity-40"><Download className="h-5 w-5" /></button></div><table className="min-w-full text-sm"><thead><tr className="border-b dark:border-gray-700">{headers.map(h => <th key={h} className="whitespace-nowrap p-3 text-left text-xs font-medium uppercase tracking-wide text-gray-500">{h}</th>)}</tr></thead><tbody>{displayed.map((row, ri) => <tr key={ri} className="border-b last:border-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/40">{row.map((c, ci) => <td key={ci} className="max-w-[420px] p-3 align-top text-gray-700 dark:text-gray-300">{render(c, row, ci)}</td>)}</tr>)}</tbody></table>{rows.length > 10 && <div className="mt-3 text-center"><button onClick={() => setAll(!all)} className="text-sm text-purple-600 hover:underline dark:text-purple-400">{all ? 'Show Less' : `Show All (${rows.length} rows)`}</button></div>}</div><DiseaseModal isOpen={!!disease} onClose={() => setDisease(null)} efoId={disease || ''} /><Modal isOpen={!!gene} onClose={() => setGene(null)} ensemblId={gene?.id} geneName={gene?.name} /></>;
 }
