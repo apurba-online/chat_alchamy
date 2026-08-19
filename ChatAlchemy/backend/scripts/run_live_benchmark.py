@@ -11,7 +11,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, select_cases, validate_cases
+from chatalchemy.benchmark import EvaluationOracle, generate_cases, score_value, select_cases, validate_cases
 from chatalchemy.reasoning import ChatAlchemyEngine
 
 PUBLIC_BENCHMARK_N = 1500
@@ -142,6 +142,7 @@ async def main():
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--max-results", type=int, default=20)
+    parser.add_argument("--oracle-snapshot", default=None, help="Optional fingerprint-matched frozen oracle snapshot for paired paper comparisons")
     args = parser.parse_args()
 
     all_cases = generate_cases(PUBLIC_BENCHMARK_N, args.seed)
@@ -159,19 +160,16 @@ async def main():
 
     run_started = datetime.now(timezone.utc)
     engine = ChatAlchemyEngine()
-    oracle = LiveOracle()
+    oracle = EvaluationOracle(
+        benchmark_fingerprint=manifest["fingerprint_sha256"],
+        snapshot_path=args.oracle_snapshot,
+    )
     rows = []
     try:
         for case in cases:
             started = time.perf_counter()
-            oracle_available = True
-            oracle_error = None
-            gold = None
-            try:
-                gold = await oracle.execute(case)
-            except Exception as exc:
-                oracle_available = False
-                oracle_error = f"{type(exc).__name__}: {exc}"
+            gold, oracle_error = await oracle.get(case)
+            oracle_available = gold is not None
 
             response = await engine.answer(case.question, max_results=args.max_results, user_evidence=user_evidence(case))
             pred = prediction(case, response)
@@ -227,7 +225,7 @@ async def main():
 
     run_finished = datetime.now(timezone.utc)
     result = {
-        "schema": "ChatAlchemyBenchmarkRun/v4",
+        "schema": "ChatAlchemyBenchmarkRun/v5",
         "run": {
             "started_at_utc": run_started.isoformat(),
             "finished_at_utc": run_finished.isoformat(),
@@ -243,6 +241,7 @@ async def main():
             "shard_index": args.shard_index,
             "max_results": args.max_results,
             "system": "ChatAlchemy-full",
+            **oracle.metadata(),
         },
         "benchmark": {**manifest, "seed": args.seed},
         "summary": aggregate_rows(rows),
