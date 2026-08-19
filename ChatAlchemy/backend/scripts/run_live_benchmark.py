@@ -30,9 +30,24 @@ def prediction(case, response):
     if family == "compound":
         evidence = next((x for x in response.evidence if x.predicate == "compound_properties"), None)
         return evidence.value if evidence else {}
-    if family == "cross":
+    if family in {"cross", "user_approval", "user_trials", "user_target"}:
         return sorted({str(row[0]).lower() for row in (response.table.rows if response.table else [])})
     return None
+
+
+def user_evidence(case):
+    if not case.family.startswith("user_"):
+        return []
+    return [
+        {
+            "subject": name,
+            "predicate": "candidate_drug",
+            "value": name,
+            "qualifiers": {"source": "benchmark uploaded list"},
+            "id": f"candidate-{index}",
+        }
+        for index, name in enumerate(case.params["candidates"])
+    ]
 
 
 def stable_snapshot_hash(kind, value, records):
@@ -72,7 +87,7 @@ async def main():
                 oracle_available = False
                 oracle_error = f"{type(exc).__name__}: {exc}"
 
-            response = await engine.answer(case.question)
+            response = await engine.answer(case.question, user_evidence=user_evidence(case))
             pred = prediction(case, response)
             score = score_value(gold.kind, pred, gold.value) if gold is not None else None
             source_records = gold.source_records if gold is not None else []
@@ -100,6 +115,7 @@ async def main():
                         for e in response.evidence
                     ],
                     "warnings": response.warnings,
+                    "params": case.params,
                 }
             )
     finally:
