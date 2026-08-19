@@ -4,11 +4,14 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import statistics
 import time
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
-from chatalchemy.benchmark import LiveOracle, generate_cases, score_value
+from chatalchemy.benchmark import LiveOracle, benchmark_manifest, generate_cases, score_value, validate_cases
 from chatalchemy.reasoning import ChatAlchemyEngine
 
 
@@ -62,16 +65,62 @@ def stable_snapshot_hash(kind, value, records):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * q))))
+    return ordered[index]
+
+
+def _aggregate(rows: list[dict]) -> dict:
+    scored = [float(r["task_score"]) for r in rows if r.get("task_score") is not None]
+    latencies = [float(r["latency_ms"]) for r in rows]
+    return {
+        "n": len(rows),
+        "oracle_coverage": statistics.mean(bool(r["oracle_available"]) for r in rows) if rows else 0.0,
+        "routing_accuracy": statistics.mean(bool(r["routing_correct"]) for r in rows) if rows else 0.0,
+        "mean_task_score": statistics.mean(scored) if scored else None,
+        "execution_success": statistics.mean(bool(r["execution_ok"]) for r in rows) if rows else 0.0,
+        "mean_supported_claim_rate": statistics.mean(float(r["supported_claim_rate"]) for r in rows) if rows else 0.0,
+        "median_latency_ms": statistics.median(latencies) if latencies else 0.0,
+        "p95_latency_ms": _percentile(latencies, 0.95),
+        "mean_api_calls": statistics.mean(int(r["api_calls"]) for r in rows) if rows else 0.0,
+        "mean_evidence_items": statistics.mean(int(r["evidence_count"]) for r in rows) if rows else 0.0,
+    }
+
+
+def _group(rows: list[dict], key: str) -> dict[str, dict]:
+    return {
+        value: _aggregate([row for row in rows if str(row.get(key)) == value])
+        for value in sorted({str(row.get(key)) for row in rows})
+    }
+
+
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n", type=int, default=24)
     parser.add_argument("--seed", type=int, default=1729)
     parser.add_argument("--out", default="benchmark/results.json")
-    parser.add_argument("--full", action="store_true")
+    parser.add_argument("--full", action="store_true", help="Run the full 1,500-case public benchmark")
+    parser.add_argument("--split", choices=["all", "dev", "test", "stress"], default="all")
+    parser.add_argument("--difficulty", choices=["all", "easy", "medium", "hard"], default="all")
+    parser.add_argument("--max-results", type=int, default=20)
     args = parser.parse_args()
 
     n = 1500 if args.full else args.n
-    cases = generate_cases(n, args.seed)
+    all_cases = generate_cases(n, args.seed)
+    manifest = validate_cases(all_cases)
+    cases = [
+        case
+        for case in all_cases
+        if (args.split == "all" or case.split == args.split)
+        and (args.difficulty == "all" or case.difficulty == args.difficulty)
+    ]
+    if not cases:
+        raise SystemExit("No benchmark cases matched the requested split/difficulty filters")
+
+    run_started = datetime.now(timezone.utc)
     engine = ChatAlchemyEngine()
     oracle = LiveOracle()
     rows = []
@@ -87,7 +136,7 @@ async def main():
                 oracle_available = False
                 oracle_error = f"{type(exc).__name__}: {exc}"
 
-            response = await engine.answer(case.question, user_evidence=user_evidence(case))
+            response = await engine.answer(case.question, max_results=args.max_results, user_evidence=user_evidence(case))
             pred = prediction(case, response)
             score = score_value(gold.kind, pred, gold.value) if gold is not None else None
             source_records = gold.source_records if gold is not None else []
@@ -95,8 +144,14 @@ async def main():
             rows.append(
                 {
                     "id": case.id,
+                    "split": case.split,
+                    "difficulty": case.difficulty,
                     "family": case.family,
+                    "template_id": case.template_id,
+                    "primary_entity": case.primary_entity,
+                    "primary_entity_type": case.primary_entity_type,
                     "question": case.question,
+                    "required_sources": case.sources,
                     "expected_operation": case.expected_operation,
                     "planned_intent": response.plan.intent,
                     "routing_correct": response.plan.intent == case.expected_operation,
@@ -104,6 +159,9 @@ async def main():
                     "supported_claim_rate": response.supported_claim_rate,
                     "execution_ok": all(t.ok for t in response.traces) if response.traces else False,
                     "latency_ms": (time.perf_counter() - started) * 1000,
+                    "api_calls": len(response.traces),
+                    "evidence_count": len(response.evidence),
+                    "claim_count": len(response.claims),
                     "oracle_available": oracle_available,
                     "oracle_error": oracle_error,
                     "oracle": gold.value if gold is not None else None,
@@ -121,33 +179,34 @@ async def main():
     finally:
         await asyncio.gather(engine.close(), oracle.close())
 
-    scored = [r["task_score"] for r in rows if r["task_score"] is not None]
-    summary = {
-        "n": len(rows),
-        "oracle_coverage": sum(r["oracle_available"] for r in rows) / len(rows) if rows else 0,
-        "routing_accuracy": sum(r["routing_correct"] for r in rows) / len(rows) if rows else 0,
-        "mean_task_score": statistics.mean(scored) if scored else None,
-        "execution_success": sum(r["execution_ok"] for r in rows) / len(rows) if rows else 0,
-        "mean_supported_claim_rate": statistics.mean(r["supported_claim_rate"] for r in rows) if rows else 0,
-        "median_latency_ms": statistics.median(r["latency_ms"] for r in rows) if rows else 0,
-        "p95_latency_ms": sorted(r["latency_ms"] for r in rows)[max(0, int(0.95 * len(rows)) - 1)] if rows else 0,
+    run_finished = datetime.now(timezone.utc)
+    result = {
+        "schema": "ChatAlchemyBenchmarkRun/v2",
+        "run": {
+            "started_at_utc": run_started.isoformat(),
+            "finished_at_utc": run_finished.isoformat(),
+            "wall_clock_seconds": (run_finished - run_started).total_seconds(),
+            "git_sha": os.getenv("GITHUB_SHA") or os.getenv("VERCEL_GIT_COMMIT_SHA"),
+            "seed": args.seed,
+            "requested_n": n,
+            "split_filter": args.split,
+            "difficulty_filter": args.difficulty,
+            "max_results": args.max_results,
+            "system": "ChatAlchemy-full",
+        },
+        "benchmark": {**manifest, "seed": args.seed},
+        "summary": _aggregate(rows),
+        "by_split": _group(rows, "split"),
+        "by_difficulty": _group(rows, "difficulty"),
+        "by_family": _group(rows, "family"),
+        "error_counts": dict(Counter(row["oracle_error"] for row in rows if row.get("oracle_error"))),
+        "cases": rows,
     }
-    by_family = {}
-    for family in sorted({r["family"] for r in rows}):
-        subset = [r for r in rows if r["family"] == family]
-        family_scores = [r["task_score"] for r in subset if r["task_score"] is not None]
-        by_family[family] = {
-            "n": len(subset),
-            "oracle_coverage": sum(r["oracle_available"] for r in subset) / len(subset),
-            "mean_task_score": statistics.mean(family_scores) if family_scores else None,
-            "routing_accuracy": statistics.mean(r["routing_correct"] for r in subset),
-            "execution_success": statistics.mean(r["execution_ok"] for r in subset),
-        }
 
     output = Path(args.out)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps({"summary": summary, "by_family": by_family, "cases": rows}, indent=2))
-    print(json.dumps({"summary": summary, "by_family": by_family}, indent=2))
+    output.write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps({k: result[k] for k in ("run", "benchmark", "summary", "by_split", "by_difficulty", "by_family")}, indent=2))
 
 
 if __name__ == "__main__":
