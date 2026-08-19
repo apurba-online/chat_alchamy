@@ -11,6 +11,7 @@ async def test_live_rxnorm_identity():
         response = await engine.answer("What is the generic identity of Tylenol?")
         assert any(t.source == "RxNorm" and t.ok for t in response.traces)
         assert any(e.source == "RxNorm" for e in response.evidence)
+        assert "acetaminophen" in response.answer.lower()
         assert response.supported_claim_rate == 1.0
     finally: await engine.close()
 
@@ -38,6 +39,7 @@ async def test_live_chembl_target_query():
     try:
         response = await engine.answer("Which drugs target EGFR?")
         assert any(t.source == "ChEMBL" and t.ok for t in response.traces)
+        assert any(e.source == "ChEMBL" for e in response.evidence)
         assert response.plan.intent == "target_drugs"
     finally: await engine.close()
 

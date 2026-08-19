@@ -7,15 +7,21 @@ from chatalchemy.sources import ClinicalTrialsSource, OpenFDASource, RxNormSourc
 @pytest.mark.asyncio
 async def test_rxnorm_parsing():
     async def handler(request: httpx.Request):
-        if "approximateTerm" in str(request.url):
-            return httpx.Response(200, json={"approximateGroup": {"candidate": [{"rxcui": "161", "score": "100"}]}})
-        return httpx.Response(200, json={"properties": {"name": "acetaminophen", "tty": "IN"}})
+        url = str(request.url)
+        if "approximateTerm" in url:
+            return httpx.Response(200, json={"approximateGroup": {"candidate": [{"rxcui": "202433", "score": "100"}]}})
+        if "/related.json" in url:
+            return httpx.Response(200, json={"relatedGroup": {"conceptGroup": [{"tty": "IN", "conceptProperties": [{"rxcui": "161", "name": "acetaminophen", "tty": "IN"}]}]}})
+        return httpx.Response(200, json={"properties": {"name": "Tylenol", "tty": "BN"}})
+
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         entity, evidence = await RxNormSource(client).resolve("Tylenol")
     assert entity is not None
     assert entity.ids["rxcui"] == "161"
+    assert entity.ids["matched_rxcui"] == "202433"
     assert entity.canonical_name == "acetaminophen"
     assert evidence[0].predicate == "drug_identity"
+    assert evidence[0].qualifiers["matched_tty"] == "BN"
 
 
 @pytest.mark.asyncio
@@ -31,7 +37,7 @@ async def test_openfda_parsing():
 @pytest.mark.asyncio
 async def test_clinicaltrials_filters_phase_and_status():
     async def handler(request: httpx.Request):
-        return httpx.Response(200, json={"studies": [{"protocolSection": {"identificationModule": {"nctId": "NCT0001", "briefTitle": "Trial"}, "statusModule": {"overallStatus": "RECRUITING"}, "designModule": {"phases": ["PHASE3"]}, "conditionsModule": {"conditions": ["NSCLC"]}, "armsInterventionsModule": {"interventions": [{"name": "Pembrolizumab"}]}}}, {"protocolSection": {"identificationModule": {"nctId": "NCT0002"}, "statusModule": {"overallStatus": "COMPLETED"}, "designModule": {"phases": ["PHASE3"]}}}]})
+        return httpx.Response(200, json={"studies": [{"protocolSection": {"identificationModule": {"nctId": "NCT0001", "briefTitle": "Trial"}, "statusModule": {"overallStatus": "RECRUITING"}, "designModule": {"phases": ["PHASE3"]}, "conditionsModule": {"conditions": ["NSCLC"]}, "armsInterventionsModule": {"interventions": [{"name": "Pembrolizumab"}]} }}, {"protocolSection": {"identificationModule": {"nctId": "NCT0002"}, "statusModule": {"overallStatus": "COMPLETED"}, "designModule": {"phases": ["PHASE3"]}}}]})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         evidence = await ClinicalTrialsSource(client).search_trials(intervention="pembrolizumab", condition="NSCLC", phase="PHASE3", status="RECRUITING")
     assert [e.value for e in evidence] == ["NCT0001"]
@@ -43,7 +49,9 @@ async def test_chembl_target_and_mechanism_parsing():
     async def handler(request: httpx.Request):
         url = str(request.url)
         if "/target/search.json" in url:
-            return httpx.Response(200, json={"targets": [{"target_chembl_id": "CHEMBL203", "pref_name": "Epidermal growth factor receptor erbB1", "organism": "Homo sapiens"}]})
+            return httpx.Response(200, json={"targets": [{"target_chembl_id": "CHEMBL_COMPLEX", "pref_name": "EGFR-containing complex", "organism": "Homo sapiens", "target_type": "PROTEIN COMPLEX"}, {"target_chembl_id": "CHEMBL203", "pref_name": "Epidermal growth factor receptor", "organism": "Homo sapiens", "target_type": "SINGLE PROTEIN", "target_components": [{"target_component_synonyms": [{"component_synonym": "EGFR"}]}]}]})
+        if "/mechanism.json" in url and "CHEMBL_COMPLEX" in url:
+            return httpx.Response(200, json={"mechanisms": []})
         if "/mechanism.json" in url:
             return httpx.Response(200, json={"mechanisms": [{"molecule_chembl_id": "CHEMBL1201742", "mechanism_of_action": "EGFR inhibitor", "action_type": "INHIBITOR"}]})
         if "/molecule/CHEMBL1201742.json" in url:
@@ -53,6 +61,7 @@ async def test_chembl_target_and_mechanism_parsing():
         evidence = await ChEMBLSource(client).target_drugs("EGFR")
     assert evidence
     assert evidence[0].subject == "GEFITINIB"
+    assert evidence[0].qualifiers["target_chembl_id"] == "CHEMBL203"
     assert evidence[0].predicate == "molecular_target"
 
 
