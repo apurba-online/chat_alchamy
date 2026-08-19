@@ -11,8 +11,10 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, validate_cases
+from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, select_cases, validate_cases
 from chatalchemy.reasoning import ChatAlchemyEngine
+
+PUBLIC_BENCHMARK_N = 1500
 
 
 def prediction(case, response):
@@ -98,7 +100,7 @@ def _percentile(values: list[float], q: float) -> float:
     return ordered[index]
 
 
-def _aggregate(rows: list[dict]) -> dict:
+def aggregate_rows(rows: list[dict]) -> dict:
     scored = [float(r["task_score"]) for r in rows if r.get("task_score") is not None]
     latencies = [float(r["latency_ms"]) for r in rows]
     claimed = [r for r in rows if int(r.get("claim_count", 0)) > 0]
@@ -122,35 +124,38 @@ def _aggregate(rows: list[dict]) -> dict:
     }
 
 
-def _group(rows: list[dict], key: str) -> dict[str, dict]:
+def group_rows(rows: list[dict], key: str) -> dict[str, dict]:
     return {
-        value: _aggregate([row for row in rows if str(row.get(key)) == value])
+        value: aggregate_rows([row for row in rows if str(row.get(key)) == value])
         for value in sorted({str(row.get(key)) for row in rows})
     }
 
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n", type=int, default=24)
     parser.add_argument("--seed", type=int, default=1729)
     parser.add_argument("--out", default="benchmark/results.json")
-    parser.add_argument("--full", action="store_true", help="Run the full 1,500-case public benchmark")
+    parser.add_argument("--full", action="store_true", help="Evaluate every case matching the selected split/difficulty")
+    parser.add_argument("--limit", type=int, default=24, help="Number of selected cases; ignored with --full")
     parser.add_argument("--split", choices=["all", "dev", "test", "stress"], default="all")
     parser.add_argument("--difficulty", choices=["all", "easy", "medium", "hard"], default="all")
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--max-results", type=int, default=20)
     args = parser.parse_args()
 
-    n = 1500 if args.full else args.n
-    all_cases = generate_cases(n, args.seed)
+    all_cases = generate_cases(PUBLIC_BENCHMARK_N, args.seed)
     manifest = validate_cases(all_cases)
-    cases = [
-        case
-        for case in all_cases
-        if (args.split == "all" or case.split == args.split)
-        and (args.difficulty == "all" or case.difficulty == args.difficulty)
-    ]
+    cases = select_cases(
+        all_cases,
+        split=args.split,
+        difficulty=args.difficulty,
+        limit=None if args.full else args.limit,
+        num_shards=args.num_shards,
+        shard_index=args.shard_index,
+    )
     if not cases:
-        raise SystemExit("No benchmark cases matched the requested split/difficulty filters")
+        raise SystemExit("No benchmark cases matched the requested selection")
 
     run_started = datetime.now(timezone.utc)
     engine = ChatAlchemyEngine()
@@ -180,6 +185,7 @@ async def main():
             rows.append(
                 {
                     "id": case.id,
+                    "task_signature": case.task_signature,
                     "split": case.split,
                     "difficulty": case.difficulty,
                     "family": case.family,
@@ -215,24 +221,28 @@ async def main():
 
     run_finished = datetime.now(timezone.utc)
     result = {
-        "schema": "ChatAlchemyBenchmarkRun/v2",
+        "schema": "ChatAlchemyBenchmarkRun/v3",
         "run": {
             "started_at_utc": run_started.isoformat(),
             "finished_at_utc": run_finished.isoformat(),
             "wall_clock_seconds": (run_finished - run_started).total_seconds(),
             "git_sha": os.getenv("GITHUB_SHA") or os.getenv("VERCEL_GIT_COMMIT_SHA"),
             "seed": args.seed,
-            "requested_n": n,
+            "benchmark_n": PUBLIC_BENCHMARK_N,
+            "full_selection": args.full,
+            "limit": None if args.full else args.limit,
             "split_filter": args.split,
             "difficulty_filter": args.difficulty,
+            "num_shards": args.num_shards,
+            "shard_index": args.shard_index,
             "max_results": args.max_results,
             "system": "ChatAlchemy-full",
         },
         "benchmark": {**manifest, "seed": args.seed},
-        "summary": _aggregate(rows),
-        "by_split": _group(rows, "split"),
-        "by_difficulty": _group(rows, "difficulty"),
-        "by_family": _group(rows, "family"),
+        "summary": aggregate_rows(rows),
+        "by_split": group_rows(rows, "split"),
+        "by_difficulty": group_rows(rows, "difficulty"),
+        "by_family": group_rows(rows, "family"),
         "error_counts": dict(Counter(row["oracle_error"] for row in rows if row.get("oracle_error"))),
         "cases": rows,
     }
