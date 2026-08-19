@@ -16,6 +16,13 @@ DRUGS = [
     "cetuximab",
     "panitumumab",
 ]
+COMPOUNDS = [
+    "osimertinib",
+    "gefitinib",
+    "erlotinib",
+    "acetaminophen",
+    "afatinib",
+]
 TARGETS = ["EGFR", "ALK", "BRAF", "ERBB2", "MET", "KRAS", "PDCD1", "VEGFA"]
 CONDITIONS = [
     "non-small-cell lung cancer",
@@ -120,9 +127,9 @@ TEMPLATES: dict[str, tuple[list[str], str, list[str], str]] = {
     ),
     "compound": (
         [
-            "What are the PubChem compound properties of {drug}?",
-            "Give the PubChem CID, canonical SMILES, and IUPAC name for {drug}.",
-            "Look up {drug} in PubChem and return its compound properties.",
+            "What are the PubChem compound properties of {compound}?",
+            "Give the PubChem CID, canonical SMILES, and IUPAC name for {compound}.",
+            "Look up {compound} in PubChem and return its compound properties.",
         ],
         "compound",
         ["pubchem"],
@@ -170,6 +177,7 @@ def generate_cases(n: int = 1500, seed: int = 1729) -> list[BenchmarkCase]:
         candidates = rng.sample(DRUGS, k=3)
         params = {
             "drug": rng.choice(DRUGS),
+            "compound": rng.choice(COMPOUNDS),
             "target": rng.choice(TARGETS),
             "condition": rng.choice(CONDITIONS),
             "gene": rng.choice(GENES),
