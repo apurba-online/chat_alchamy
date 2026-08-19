@@ -31,7 +31,9 @@ REQUIRED_FILES = [
     BACKEND / "scripts" / "run_live_benchmark.py",
     BACKEND / "scripts" / "merge_benchmark_shards.py",
     BACKEND / "scripts" / "run_model_baseline.py",
+    BACKEND / "scripts" / "merge_model_baseline_shards.py",
     BACKEND / "scripts" / "run_ablation.py",
+    BACKEND / "scripts" / "merge_ablation_shards.py",
     BACKEND / "scripts" / "run_counterfactual.py",
     BACKEND / "scripts" / "run_failure_injection.py",
     BACKEND / "scripts" / "evaluate_conflicts.py",
@@ -46,6 +48,7 @@ REQUIRED_FILES = [
     BACKEND / "scripts" / "summarize_results.py",
     REPO_ROOT / ".github" / "workflows" / "chatalchemy-live-ci.yml",
     REPO_ROOT / ".github" / "workflows" / "chatalchemy-paper-experiments.yml",
+    REPO_ROOT / ".github" / "workflows" / "chatalchemy-primary-campaign.yml",
 ]
 
 FORBIDDEN_TEXT = (
@@ -122,10 +125,22 @@ def validate_protocol_alignment(manifest: dict) -> None:
     if missing_targets:
         raise AssertionError(f"paper workflow is missing experiment targets: {missing_targets}")
 
+    campaign = (REPO_ROOT / ".github" / "workflows" / "chatalchemy-primary-campaign.yml").read_text()
+    for required in (
+        "campaign-oracle-snapshot",
+        "--oracle-snapshot benchmark/oracle-snapshot.json",
+        "max-parallel: 2",
+        "merge_model_baseline_shards.py",
+        "merge_ablation_shards.py",
+        "generate_paper_tables.py",
+    ):
+        if required not in campaign:
+            raise AssertionError(f"frozen primary campaign is missing required control: {required}")
+
     benchmark_runner = (BACKEND / "scripts" / "run_live_benchmark.py").read_text()
-    for required_field in ("answer_text", "claims", "source_traces", "oracle_snapshot_hash"):
+    for required_field in ("answer_text", "claims", "source_traces", "oracle_snapshot_hash", "--oracle-snapshot"):
         if required_field not in benchmark_runner:
-            raise AssertionError(f"primary benchmark must preserve {required_field} for audit/human evaluation")
+            raise AssertionError(f"primary benchmark must preserve/support {required_field}")
 
     if manifest.get("case_count") != 1500:
         raise AssertionError("publication benchmark must contain 1500 task states")
@@ -169,6 +184,7 @@ def main() -> None:
         "human_audit_trace_gate": "passed",
         "expert_packet_gate": "passed",
         "failure_review_gate": "passed",
+        "frozen_primary_campaign_gate": "passed",
     }
     print(json.dumps(summary, indent=2, default=str))
 
