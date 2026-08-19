@@ -3,10 +3,17 @@ import json
 from pathlib import Path
 
 from scripts.freeze_external_holdout import freeze
-from scripts.generate_paper_tables import _paired_statistics, _write_main_csv, _write_main_tex
+from scripts.generate_paper_tables import (
+    _normalize_summary,
+    _paired_statistics,
+    _write_main_csv,
+    _write_main_tex,
+)
+from scripts.prepare_expert_evaluation import _render_response, _sample_common_case_ids
+from scripts.prepare_failure_review import _is_failure
 
 
-def _system(name, scores):
+def _system(name, scores, family="identity"):
     return {
         "name": name,
         "summary": {
@@ -17,7 +24,7 @@ def _system(name, scores):
         },
         "by_family": {},
         "cases": [
-            {"id": f"case-{i}", "task_score": score}
+            {"id": f"case-{i}", "task_score": score, "family": family, "question": f"Question {i}"}
             for i, score in enumerate(scores)
         ],
     }
@@ -35,6 +42,18 @@ def test_paired_paper_statistics_use_common_case_ids():
     assert "holm_bonferroni" in comparison
 
 
+def test_model_baseline_summary_maps_to_common_paper_schema():
+    normalized = _normalize_summary({
+        "n": 10,
+        "baseline_mean_task_score": 0.65,
+        "median_baseline_latency_ms": 321.5,
+        "mean_model_total_tokens": 480.0,
+    })
+    assert normalized["mean_task_score"] == 0.65
+    assert normalized["median_latency_ms"] == 321.5
+    assert normalized["mean_model_total_tokens"] == 480.0
+
+
 def test_paper_tables_are_machine_and_latex_readable(tmp_path: Path):
     systems = [_system("ChatAlchemy-full", [1.0, 0.5]), _system("LLM_only", [0.5, 0.0])]
     csv_path = tmp_path / "table.csv"
@@ -46,6 +65,8 @@ def test_paper_tables_are_machine_and_latex_readable(tmp_path: Path):
     tex = tex_path.read_text()
     assert "ChatAlchemy-full" in tex
     assert r"LLM\_only" in tex
+    assert "\\begin{tabular}" in tex
+    assert "\\end{tabular}" in tex
 
 
 def test_external_holdout_freeze_validates_and_fingerprints(tmp_path: Path):
@@ -68,3 +89,23 @@ def test_external_holdout_freeze_validates_and_fingerprints(tmp_path: Path):
     assert len(result["sha256_raw_file"]) == 64
     assert len(result["canonical_holdout_fingerprint"]) == 64
     assert manifest_path.exists()
+
+
+def test_expert_packet_sampling_requires_common_ids_and_is_deterministic():
+    a = {"label": "A", "payload": {"cases": _system("A", [1, 0.5, 0])["cases"]}}
+    b = {"label": "B", "payload": {"cases": _system("B", [0.5, 0.5, 1])["cases"]}}
+    first = _sample_common_case_ids([a, b], 2, 1729)
+    second = _sample_common_case_ids([a, b], 2, 1729)
+    assert first == second
+    assert len(first) == 2
+
+
+def test_expert_response_prefers_saved_answer_text():
+    assert _render_response({"answer_text": "Auditable answer", "prediction": ["x"]}) == "Auditable answer"
+
+
+def test_failure_review_flags_scientific_and_execution_failures():
+    assert _is_failure({"task_score": 0.5, "execution_ok": True, "routing_correct": True})
+    assert _is_failure({"task_score": 1.0, "execution_ok": False, "routing_correct": True})
+    assert _is_failure({"task_score": 1.0, "execution_ok": True, "routing_correct": False})
+    assert not _is_failure({"task_score": 1.0, "execution_ok": True, "routing_correct": True})
