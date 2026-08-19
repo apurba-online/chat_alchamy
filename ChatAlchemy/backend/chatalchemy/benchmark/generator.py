@@ -96,7 +96,7 @@ ENTITY_POOLS: dict[str, EntityPool] = {
             "thyroid cancer", "cholangiocarcinoma", "mesothelioma", "soft tissue sarcoma",
             "small-cell lung cancer", "cervical cancer",
         ),
-        genes=("RET", "ROS1", "PIK3CA", "CDK4", "CDK6", "FGFR2", "FGFR3", "MTOR", "TSC1", "TSC2"),
+        genes=("RET", "ROS1", "MAP2K1", "CDK4", "CDK6", "FGFR2", "FGFR3", "MTOR", "TSC1", "TSC2"),
     ),
 }
 
@@ -126,7 +126,7 @@ FAMILY_SPECS: dict[str, FamilySpec] = {
             "Resolve {drug} to its canonical generic drug identity.",
             "Which generic ingredient does {drug} correspond to?",
             "What generic name does RxNorm assign to {drug}?",
-            "Identify the RxCUI-linked generic ingredient for {drug}.",
+            "Identify the RxCUI-linked generic ingredient for {drug}?",
             "Using RxNorm, resolve {drug} to a generic ingredient.",
             "Give the canonical RxNorm identity for {drug}.",
             "What is the canonical drug identity of {drug} in RxNorm?",
