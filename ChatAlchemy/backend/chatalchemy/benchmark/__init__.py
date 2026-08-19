@@ -8,6 +8,7 @@ from .generator import (
     validate_cases,
 )
 from .oracle import LiveOracle, OracleResult
+from .oracle_provider import EvaluationOracle
 from .oracle_snapshot import SNAPSHOT_SCHEMA, load_oracle_snapshot, oracle_result_for_case
 from .metrics import (
     grounded_obedience_score,
@@ -28,6 +29,7 @@ __all__ = [
     "select_cases",
     "LiveOracle",
     "OracleResult",
+    "EvaluationOracle",
     "SNAPSHOT_SCHEMA",
     "load_oracle_snapshot",
     "oracle_result_for_case",
