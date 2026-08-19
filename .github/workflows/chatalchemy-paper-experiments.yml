@@ -1,0 +1,289 @@
+name: ChatAlchemy Paper Experiments
+
+on:
+  workflow_dispatch:
+    inputs:
+      experiment:
+        description: Experiment to run
+        required: true
+        type: choice
+        options:
+          - main_full
+          - ablations
+          - baseline_llm_only
+          - baseline_same_retrieval
+          - failure_injection
+          - counterfactual
+      split:
+        description: Frozen public benchmark split
+        required: true
+        default: test
+        type: choice
+        options:
+          - dev
+          - test
+          - stress
+          - all
+      difficulty:
+        description: Difficulty filter
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - easy
+          - medium
+          - hard
+      limit:
+        description: Case limit for non-main experiments; 0 means all selected cases
+        required: true
+        default: '150'
+        type: string
+      model:
+        description: Server-side model ID for model experiments
+        required: true
+        default: gpt-5-mini
+        type: string
+      source:
+        description: Source for failure injection
+        required: true
+        default: clinicaltrials
+        type: choice
+        options:
+          - rxnorm
+          - dailymed
+          - openfda
+          - clinicaltrials
+          - chembl
+          - opentargets
+          - pubchem
+      fault_mode:
+        description: Injected source failure mode
+        required: true
+        default: exception
+        type: choice
+        options:
+          - exception
+          - empty
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chatalchemy-paper-${{ github.ref }}-${{ inputs.experiment }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  main-benchmark:
+    if: ${{ inputs.experiment == 'main_full' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Validate frozen publication artifact
+        run: PYTHONPATH=. python scripts/validate_publication_artifact.py
+      - name: Run benchmark shard
+        run: >-
+          PYTHONPATH=. python scripts/run_live_benchmark.py
+          --full
+          --seed 1729
+          --split '${{ inputs.split }}'
+          --difficulty '${{ inputs.difficulty }}'
+          --num-shards 10
+          --shard-index ${{ matrix.shard }}
+          --out benchmark/main-shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: paper-main-shard-${{ matrix.shard }}
+          path: ChatAlchemy/backend/benchmark/main-shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+  merge-main:
+    if: ${{ inputs.experiment == 'main_full' && always() }}
+    needs: main-benchmark
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: paper-main-shard-*
+          path: ChatAlchemy/backend/benchmark/shards
+          merge-multiple: true
+      - name: Merge and validate benchmark shards
+        run: >-
+          PYTHONPATH=. python scripts/merge_benchmark_shards.py
+          benchmark/shards/main-shard-0.json
+          benchmark/shards/main-shard-1.json
+          benchmark/shards/main-shard-2.json
+          benchmark/shards/main-shard-3.json
+          benchmark/shards/main-shard-4.json
+          benchmark/shards/main-shard-5.json
+          benchmark/shards/main-shard-6.json
+          benchmark/shards/main-shard-7.json
+          benchmark/shards/main-shard-8.json
+          benchmark/shards/main-shard-9.json
+          --expected-shards 10
+          --out benchmark/main-merged.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paper-main-merged
+          path: ChatAlchemy/backend/benchmark/main-merged.json
+          retention-days: 90
+
+  ablations:
+    if: ${{ inputs.experiment == 'ablations' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Run paired component ablations
+        run: >-
+          PYTHONPATH=. python scripts/run_ablation.py
+          --seed 1729
+          --split '${{ inputs.split }}'
+          --difficulty '${{ inputs.difficulty }}'
+          --limit '${{ inputs.limit }}'
+          --out benchmark/ablations.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: paper-ablations
+          path: ChatAlchemy/backend/benchmark/ablations.json
+          if-no-files-found: error
+          retention-days: 90
+
+  model-baseline:
+    if: ${{ inputs.experiment == 'baseline_llm_only' || inputs.experiment == 'baseline_same_retrieval' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ inputs.model }}
+      MODE: ${{ inputs.experiment == 'baseline_llm_only' && 'llm_only' || 'same_retrieval_llm' }}
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Require server-side model credential
+        run: test -n "$OPENAI_API_KEY"
+      - name: Run controlled model baseline
+        run: >-
+          PYTHONPATH=. python scripts/run_model_baseline.py
+          --mode "$MODE"
+          --model '${{ inputs.model }}'
+          --seed 1729
+          --split '${{ inputs.split }}'
+          --difficulty '${{ inputs.difficulty }}'
+          --limit '${{ inputs.limit }}'
+          --out benchmark/model-baseline.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: paper-${{ inputs.experiment }}-${{ inputs.model }}
+          path: ChatAlchemy/backend/benchmark/model-baseline.json
+          if-no-files-found: error
+          retention-days: 90
+
+  failure-injection:
+    if: ${{ inputs.experiment == 'failure_injection' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Run controlled source failure experiment
+        run: >-
+          PYTHONPATH=. python scripts/run_failure_injection.py
+          --source '${{ inputs.source }}'
+          --mode '${{ inputs.fault_mode }}'
+          --seed 1729
+          --split '${{ inputs.split }}'
+          --difficulty '${{ inputs.difficulty }}'
+          --limit '${{ inputs.limit }}'
+          --out benchmark/failure-injection.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: paper-failure-${{ inputs.source }}-${{ inputs.fault_mode }}
+          path: ChatAlchemy/backend/benchmark/failure-injection.json
+          if-no-files-found: error
+          retention-days: 90
+
+  counterfactual:
+    if: ${{ inputs.experiment == 'counterfactual' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ inputs.model }}
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Require server-side model credential
+        run: test -n "$OPENAI_API_KEY"
+      - name: Run counterfactual grounding evaluation
+        run: PYTHONPATH=. python scripts/run_counterfactual.py --out benchmark/counterfactual.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: paper-counterfactual-${{ inputs.model }}
+          path: ChatAlchemy/backend/benchmark/counterfactual.json
+          if-no-files-found: error
+          retention-days: 90
