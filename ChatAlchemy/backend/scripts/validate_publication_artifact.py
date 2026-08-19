@@ -41,6 +41,8 @@ REQUIRED_FILES = [
     BACKEND / "scripts" / "freeze_external_holdout.py",
     BACKEND / "scripts" / "make_study_manifest.py",
     BACKEND / "scripts" / "generate_paper_tables.py",
+    BACKEND / "scripts" / "prepare_expert_evaluation.py",
+    BACKEND / "scripts" / "prepare_failure_review.py",
     BACKEND / "scripts" / "summarize_results.py",
     REPO_ROOT / ".github" / "workflows" / "chatalchemy-live-ci.yml",
     REPO_ROOT / ".github" / "workflows" / "chatalchemy-paper-experiments.yml",
@@ -165,6 +167,8 @@ def main() -> None:
         "required_same_tools_baseline": "passed",
         "experiment_coverage_gate": "passed",
         "human_audit_trace_gate": "passed",
+        "expert_packet_gate": "passed",
+        "failure_review_gate": "passed",
     }
     print(json.dumps(summary, indent=2, default=str))
 
