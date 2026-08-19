@@ -87,7 +87,10 @@ Implemented controlled baselines:
 
 - `LLM-only`: question without live evidence;
 - `same-retrieval LLM`: receives ChatAlchemy's retrieved evidence objects but performs final composition itself;
+- `unrestricted same-tools LLM agent`: independently chooses sequential calls to the same seven live source adapters without using ChatAlchemy's rule planner, normalization, deterministic joins, conflict classifier, or verifier;
 - `ChatAlchemy-full` evaluated alongside each model baseline on the same cases/oracle state.
+
+The unrestricted same-tools agent receives a generous 40-step ceiling so it is not handicapped on multi-candidate cross-source questions. Actual tool calls, model input/output/total tokens, and latency are retained per case and reported as efficiency outcomes.
 
 Implemented component ablations:
 
@@ -98,7 +101,7 @@ Implemented component ablations:
 
 Ablations execute one independent oracle result per case and share it across all variants.
 
-External agent baselines can be added only when tool/source coverage is sufficiently comparable; harness/tool-budget differences must be explicitly reported.
+Additional external biomedical-agent baselines can be added only when tool/source coverage is sufficiently comparable; harness/tool-budget differences must be explicitly reported.
 
 ## Grounding and robustness protocols
 
@@ -157,12 +160,13 @@ The manual `ChatAlchemy Paper Experiments` GitHub Actions workflow supports:
 - paired ablations;
 - LLM-only baseline;
 - same-retrieval LLM baseline;
+- unrestricted same-tools LLM agent baseline;
 - source-failure injection;
 - counterfactual grounding.
 
 The full benchmark is deterministically split into ten shards. The merger rejects benchmark-fingerprint mismatch, run-configuration mismatch, missing/unexpected shard indexes, and duplicate task IDs before producing an aggregate artifact.
 
-Model baselines require a server-side `OPENAI_API_KEY`; no credential is stored in source code.
+Model baselines require a server-side `OPENAI_API_KEY`; no credential is stored in source code. The Responses API usage fields are recorded per model call so input, output, and total token consumption can be measured from actual runs rather than estimated afterward.
 
 ## Automated publication gates
 
@@ -196,8 +200,8 @@ The **experimental infrastructure is implemented**. Publication-scale performanc
 Still requiring actual collection:
 
 - frozen full public test/stress benchmark results;
-- model-baseline runs using configured model credentials;
-- any fair external biomedical/tool-agent baseline;
+- LLM-only, same-retrieval, and unrestricted same-tools agent runs using configured model credentials;
+- any additional fair external biomedical-agent baseline;
 - private independently authored external holdout;
 - 300-500 manually annotated conflict/context evidence pairs with two raters and adjudication;
 - repeated real temporal timepoints;
