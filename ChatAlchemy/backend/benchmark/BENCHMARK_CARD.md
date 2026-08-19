@@ -1,67 +1,140 @@
-# LiveBioEvidenceBench-v2 Benchmark Card
+# LiveBioEvidenceBench-v2.1 Benchmark Card
 
 ## Purpose
 
-LiveBioEvidenceBench evaluates biomedical agents that must answer structured questions using evidence retrieved from live online biomedical databases. It is designed to measure correctness, grounding, source selection, cross-source composition, and robustness to changing source state.
+LiveBioEvidenceBench evaluates biomedical agents that must answer structured questions using evidence retrieved from live online biomedical databases. It measures task correctness, source routing, provenance alignment, cross-source composition, user-evidence composition, robustness to source failure, and adaptation to changing source state.
 
-## Scope
+It is not a clinical decision-support benchmark and does not establish clinical safety.
 
-Task families include drug identity, DailyMed labels, FDA application records, clinical trials, drug-target mechanisms, Open Targets gene evidence, PubChem compound properties, cross-source intersections, and user-provided candidate lists combined with live evidence.
+## Public benchmark definition
 
-The benchmark is not a clinical decision-support benchmark and must not be interpreted as demonstrating clinical safety.
+Default configuration:
+
+- seed: `1729`
+- total task specifications: `1500`
+- `dev`: `300`
+- `test`: `900`
+- `stress`: `300`
+- independent live oracle: required
+
+Every generated case stores task family, expected operation, required sources, difficulty, template ID, public split, primary entity metadata, parameters, and a SHA-256 **task signature**.
+
+Uploaded-data tasks can share the same natural-language wording while carrying different candidate lists. Consequently, uniqueness is defined over the complete task state rather than surface question text alone.
+
+## Task families
+
+The public benchmark covers:
+
+- RxNorm drug identity normalization;
+- DailyMed SPL label records;
+- Drugs@FDA/openFDA application records;
+- ClinicalTrials.gov trial retrieval with structured filters;
+- ChEMBL target-to-drug mechanism evidence;
+- Open Targets gene/disease/drug evidence;
+- PubChem small-molecule compound properties;
+- multi-source target + FDA + clinical-trial intersections;
+- uploaded candidate lists intersected with FDA, trial, or target evidence.
+
+The product contains additional biomedical-analysis functionality that is tested as software behavior unless a separate independently verifiable scientific task is defined.
 
 ## Dynamic ground truth
 
-Ground truth is computed at evaluation time by an independent live oracle. The oracle is separated from ChatAlchemy's planner, generator, conflict module, and verifier. Because source state can change, benchmark artifacts must record retrieval timestamps and oracle coverage for every run.
+Answers are **not** embedded in the benchmark. At evaluation time, `LiveOracle` directly queries public sources independently of ChatAlchemy's planner, final reasoning operations, conflict analysis, and claim verifier.
 
-## Splits
+Each oracle result preserves source record identifiers and retrieval timestamps. Evaluation artifacts can additionally store an oracle snapshot hash. This makes source change and source failure observable rather than silently converting a live benchmark into a static downloaded pharmaceutical database.
 
-- `dev`: iterative development only.
-- `test`: primary frozen evaluation.
-- `stress`: out-of-development entity pool and harder/less common conditions; reported separately.
+## Public partitions and leakage controls
 
-Entity pools are intentionally disjoint across the three splits. Aliases map only to canonical entities within the same split.
+`dev`, `test`, and `stress` use disjoint pools for drugs, targets, genes, and conditions. Brand aliases map only to canonical drugs from the same partition. PubChem tasks use small-molecule names selected for the corresponding partition.
 
-## Leakage controls
+The validator enforces:
 
-The benchmark validator and test suite enforce:
+- deterministic generation for fixed version/seed;
+- exactly 1500 task specifications at the publication configuration;
 - unique case IDs;
-- deterministic generation for a fixed version/seed;
-- disjoint canonical drug, target, condition, and gene pools across splits;
-- split metadata on every case;
-- explicit benchmark version and manifest fingerprint.
+- unique task signatures;
+- 300/900/300 partition sizes;
+- near-equal task-family counts within each public partition;
+- allowed difficulty labels;
+- semantic entity isolation across public partitions;
+- reproducible SHA-256 benchmark fingerprint.
 
-Paraphrase templates may share semantic task structure across splits. Therefore claims of linguistic generalization should not be made from this benchmark alone. The intended generalization test is entity/source composition, not unseen natural-language task discovery.
+Paraphrase structures are shared across splits. Therefore this benchmark is **not** evidence of unseen natural-language task discovery. The main generalization targets are entity, source, and evidence-composition behavior. A private independently authored holdout is required for stronger external generalization claims.
 
-## Metrics
+## Difficulty labels
 
-Primary metric: mean task score on `test`.
+- `easy`: primarily single-source retrieval or identity/record tasks;
+- `medium`: filtered retrieval, gene evidence, or user-list composition;
+- `hard`: multi-source intersections and user-list trial constraints.
 
-Structured outputs are evaluated with exact scalar match, set F1, or record-field accuracy depending on the task. Reliability metrics include supported-claim rate, oracle coverage, execution success, attribution measures, and abstention behavior. Counterfactual experiments additionally report GOS and PMIR.
+Difficulty is a protocol label based on operation structure, not a post-hoc label derived from observed model accuracy.
 
-## Source outages
+## Oracle-state fairness
 
-A failed oracle call is not scored as an incorrect system answer. Oracle coverage must be reported. Comparisons should additionally report common-case results when systems were evaluated under meaningfully different source availability.
+Two evaluation modes are supported:
+
+1. independent live oracle evaluated in the same iteration as the compared systems; or
+2. a fingerprint-matched `LiveBioOracleSnapshot/v1` used by all systems in a paired comparison.
+
+A new oracle snapshot is intentionally created for each temporal timepoint.
+
+## Primary scoring
+
+Depending on task family, outputs use:
+
+- exact normalized scalar match;
+- set F1;
+- structured record-field accuracy.
+
+Primary paper endpoint: mean task score on `test`.
+
+Reliability reporting includes:
+
+- oracle coverage;
+- source execution success;
+- routing accuracy;
+- provenance record F1 against the independent oracle trace;
+- claim-producing rate;
+- supported-claim rate conditional on claim-producing cases;
+- fully-supported claim-case rate;
+- latency and source-call efficiency.
+
+A no-claim case is not treated as evidence of perfect grounding merely because no unsupported claim exists.
+
+## Source outages and invalid items
+
+An unavailable oracle result is not counted as system success or failure. Oracle coverage is always reported. Persistent malformed/incompatible cases can be repaired before benchmark freeze. Post-freeze exclusions must be explicitly reported with reasons and are not silently replaced.
 
 ## Temporal use
 
-For temporal evaluation, reuse identical benchmark case IDs at each time point. Do not regenerate a new benchmark seed between time points. Distinguish source outages/schema failures from genuine changes in source-supported answers.
+Temporal evaluation reuses identical benchmark IDs and fingerprint. Source record IDs, retrieval timestamps, and oracle hashes distinguish semantic source changes from transient outages or API schema failures.
 
 ## Limitations
 
-- The benchmark uses templated task families rather than unrestricted biomedical questions.
-- It emphasizes public structured biomedical sources and does not cover private clinical records.
-- Database coverage is heterogeneous; absence of a returned record is not necessarily biological or regulatory absence.
-- Live-source evaluation reduces static-answer staleness but increases dependence on source uptime and schema stability.
-- The benchmark does not establish clinical utility or patient-level safety.
+- The benchmark is templated and intentionally constrained to auditable structured operations.
+- It emphasizes public biomedical databases and does not cover private clinical records.
+- Database coverage and terminology differ between sources; absence of a record is not necessarily biological or regulatory absence.
+- Live evaluation depends on source uptime and schema stability.
+- Public split isolation does not replace a private author-independent holdout.
+- The benchmark does not establish diagnostic, therapeutic, or patient-level clinical utility.
 
 ## Reproducibility
 
-Default generation:
+Generate and validate the publication benchmark:
 
 ```bash
 cd ChatAlchemy/backend
-PYTHONPATH=. python scripts/generate_livebiobench.py --n 1500 --seed 1729 --out benchmark/livebiobench-v2.json
+PYTHONPATH=. python scripts/generate_livebiobench.py \
+  --n 1500 \
+  --seed 1729 \
+  --out benchmark/livebiobench-v2.1.json \
+  --manifest benchmark/livebiobench-v2.1.manifest.json
 ```
 
-Any paper result must report benchmark version, seed, split, git SHA, run timestamps, and oracle coverage.
+Run a frozen-ID live smoke:
+
+```bash
+PYTHONPATH=. python scripts/run_live_benchmark.py --limit 8 --seed 1729
+```
+
+Full evaluations may be deterministically sharded. Any paper result must report benchmark version/fingerprint, seed, selected partition/difficulty, Git SHA, oracle mode, timestamps, and oracle coverage.
