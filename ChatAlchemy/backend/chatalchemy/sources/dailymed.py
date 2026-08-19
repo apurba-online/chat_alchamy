@@ -1,27 +1,15 @@
 from __future__ import annotations
-
+from uuid import uuid4
+from .base import BaseSource
 from ..models import EvidenceItem
-from .base import LiveSource
 
-
-class DailyMedSource(LiveSource):
-    name = "DailyMed"
-    endpoint = "https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json"
-
-    async def label_records(self, *, drug_name: str | None = None, rxcui: str | None = None, limit: int = 20) -> list[EvidenceItem]:
-        params: dict[str, str | int] = {"pagesize": min(limit, 100), "page": 1}
-        if rxcui:
-            params["rxcui"] = rxcui
-        elif drug_name:
-            params["drug_name"] = drug_name
-            params["name_type"] = "both"
-        else:
-            return []
-        data = await self.get_json(self.endpoint, params=params)
-        out: list[EvidenceItem] = []
-        for row in data.get("data", []) or []:
-            setid = row.get("setid")
-            if not setid:
-                continue
-            out.append(EvidenceItem.build(subject=drug_name or rxcui or "drug", predicate="dailymed_label_record", value=setid, qualifiers={"title": row.get("title"), "spl_version": row.get("spl_version"), "published_date": row.get("published_date")}, source=self.name, source_record_id=setid, source_url=f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={setid}"))
-        return out
+class DailyMedSource(BaseSource):
+    name='dailymed'; base='https://dailymed.nlm.nih.gov/dailymed/services/v2'
+    async def labels(self, drug: str, rxcui: str|None=None, max_results: int=20):
+        params={'pagesize':max_results}; params['rxcui' if rxcui else 'drug_name']=rxcui or drug
+        data,latency=await self._request_json('GET',f'{self.base}/spls.json',params=params); items=data.get('data',[]) if isinstance(data,dict) else []
+        out=[]
+        for item in items[:max_results]:
+            setid=str(item.get('setid') or item.get('set_id') or ''); title=item.get('title') or item.get('drug_name') or drug
+            out.append(EvidenceItem(id=f'dailymed-{uuid4().hex[:12]}',source=self.name,source_record_id=setid or None,source_url=f'https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={setid}' if setid else None,subject=drug,canonical_subject=drug,predicate='label_record',value=title,context={'spl_version':item.get('spl_version'),'published_date':item.get('published_date')},raw=item))
+        return out,latency

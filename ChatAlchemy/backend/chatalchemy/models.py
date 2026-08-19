@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import datetime, timezone
 from typing import Any, Literal
-
 from pydantic import BaseModel, Field
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Entity(BaseModel):
     text: str
-    type: Literal["drug", "condition", "target", "trial", "unknown"]
+    type: str = "unknown"
     canonical_name: str | None = None
-    ids: dict[str, str] = Field(default_factory=dict)
+    identifiers: dict[str, str] = Field(default_factory=dict)
 
 
 class Operation(BaseModel):
@@ -23,68 +24,96 @@ class Operation(BaseModel):
 
 class QueryPlan(BaseModel):
     question: str
-    intent: Literal["identity", "label", "approval", "trials", "target_drugs", "cross_source", "unknown"]
+    intent: str
     entities: list[Entity] = Field(default_factory=list)
-    operations: list[Operation] = Field(default_factory=list)
     filters: dict[str, Any] = Field(default_factory=dict)
-    final_operation: str = "synthesize"
+    operations: list[Operation] = Field(default_factory=list)
+    final_operation: str = "list"
 
 
 class EvidenceItem(BaseModel):
     id: str
-    subject: str
-    predicate: str
-    value: Any
-    qualifiers: dict[str, Any] = Field(default_factory=dict)
     source: str
     source_record_id: str | None = None
     source_url: str | None = None
-    retrieved_at: str
-    source_version: str | None = None
-    evidence_type: Literal["structured", "derived"] = "structured"
-
-    @classmethod
-    def build(cls, *, subject: str, predicate: str, value: Any, source: str, qualifiers: dict[str, Any] | None = None, source_record_id: str | None = None, source_url: str | None = None, source_version: str | None = None, evidence_type: Literal["structured", "derived"] = "structured") -> "EvidenceItem":
-        qualifiers = qualifiers or {}
-        payload = json.dumps({"subject": subject, "predicate": predicate, "value": value, "source": source, "qualifiers": qualifiers, "source_record_id": source_record_id}, sort_keys=True, default=str)
-        eid = "ev_" + hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
-        return cls(id=eid, subject=subject, predicate=predicate, value=value, qualifiers=qualifiers, source=source, source_record_id=source_record_id, source_url=source_url, retrieved_at=datetime.now(timezone.utc).isoformat(), source_version=source_version, evidence_type=evidence_type)
+    subject: str
+    predicate: str
+    value: Any
+    context: dict[str, Any] = Field(default_factory=dict)
+    canonical_subject: str | None = None
+    identifiers: dict[str, str] = Field(default_factory=dict)
+    retrieved_at: datetime = Field(default_factory=utc_now)
+    confidence: float = 1.0
+    raw: dict[str, Any] | None = None
 
 
 class ConflictAssessment(BaseModel):
-    evidence_a: str
-    evidence_b: str
+    evidence_ids: list[str]
     relation: Literal["agreement", "complementary", "context_difference", "conflict"]
     reason: str
 
 
 class Claim(BaseModel):
     text: str
-    support_ids: list[str] = Field(default_factory=list)
-    supported: bool = False
+    support_evidence_ids: list[str] = Field(default_factory=list)
+    verified: bool = False
 
 
 class SourceTrace(BaseModel):
     source: str
     operation: str
-    ok: bool
+    success: bool
     latency_ms: float
-    result_count: int = 0
+    record_count: int = 0
     error: str | None = None
 
 
 class QueryRequest(BaseModel):
-    question: str = Field(min_length=3)
+    question: str
     max_results: int = Field(default=20, ge=1, le=100)
-    debug: bool = False
+    conversation: list[dict[str, str]] = Field(default_factory=list)
+    user_evidence: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class QueryResponse(BaseModel):
     answer: str
     plan: QueryPlan
-    claims: list[Claim]
     evidence: list[EvidenceItem]
-    conflicts: list[ConflictAssessment]
-    traces: list[SourceTrace]
-    supported_claim_rate: float
+    conflicts: list[ConflictAssessment] = Field(default_factory=list)
+    claims: list[Claim] = Field(default_factory=list)
+    supported_claim_rate: float = 0.0
+    traces: list[SourceTrace] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    abstained: bool = False
+
+
+class ChatRequest(BaseModel):
+    messages: list[dict[str, str]]
+    max_results: int = Field(default=20, ge=1, le=100)
+
+
+class ChatResponse(BaseModel):
+    content: str
+    role: str = "assistant"
+    evidence: list[EvidenceItem] = Field(default_factory=list)
+    supported_claim_rate: float = 0.0
+    warnings: list[str] = Field(default_factory=list)
+
+
+class BiomedicalTextRequest(BaseModel):
+    text: str
+
+
+class SuggestionRequest(BaseModel):
+    context: str
+
+
+class LLMRequest(BaseModel):
+    messages: list[dict[str, str]]
+    temperature: float = 0.0
+    max_tokens: int | None = None
+    response_format: str | None = None
+
+
+class GeneListRequest(BaseModel):
+    genes: list[str]
