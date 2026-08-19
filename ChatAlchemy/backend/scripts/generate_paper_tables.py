@@ -19,6 +19,8 @@ DISPLAY_METRICS = [
     ("median_latency_ms", "Median latency (ms)"),
     ("p95_latency_ms", "P95 latency (ms)"),
     ("mean_api_calls", "API calls/query"),
+    ("mean_model_total_tokens", "Model tokens/query"),
+    ("mean_tool_calls", "Tool calls/query"),
 ]
 
 
@@ -43,7 +45,7 @@ def _fmt(value: Any, metric: str) -> str:
         return str(int(value))
     if metric.endswith("latency_ms"):
         return f"{float(value):.1f}"
-    if metric == "mean_api_calls":
+    if metric in {"mean_api_calls", "mean_tool_calls", "mean_model_total_tokens"}:
         return f"{float(value):.2f}"
     return f"{float(value):.3f}"
 
@@ -51,6 +53,26 @@ def _fmt(value: Any, metric: str) -> str:
 def _system_name(payload: dict, fallback: str) -> str:
     run = payload.get("run") or {}
     return str(run.get("system") or run.get("mode") or fallback)
+
+
+def _normalize_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    """Map heterogeneous runner summaries onto the common manuscript schema."""
+    normalized = dict(summary or {})
+    aliases = {
+        "mean_task_score": ("baseline_mean_task_score",),
+        "median_latency_ms": ("median_baseline_latency_ms",),
+    }
+    for target, candidates in aliases.items():
+        if normalized.get(target) is None:
+            for candidate in candidates:
+                if normalized.get(candidate) is not None:
+                    normalized[target] = normalized[candidate]
+                    break
+    return normalized
+
+
+def _normalize_family_map(by_family: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {str(family): _normalize_summary(summary or {}) for family, summary in (by_family or {}).items()}
 
 
 def _extract_systems(label: str, payload: dict) -> list[dict]:
@@ -61,15 +83,15 @@ def _extract_systems(label: str, payload: dict) -> list[dict]:
             name = str(item.get("system") or "system")
             out.append({
                 "name": f"{label}:{name}" if label else name,
-                "summary": item.get("summary") or {},
-                "by_family": item.get("by_family") or {},
+                "summary": _normalize_summary(item.get("summary") or {}),
+                "by_family": _normalize_family_map(item.get("by_family") or {}),
                 "cases": item.get("cases") or [],
             })
         return out
     return [{
         "name": label or _system_name(payload, "system"),
-        "summary": payload.get("summary") or {},
-        "by_family": payload.get("by_family") or {},
+        "summary": _normalize_summary(payload.get("summary") or {}),
+        "by_family": _normalize_family_map(payload.get("by_family") or {}),
         "cases": payload.get("cases") or [],
     }]
 
