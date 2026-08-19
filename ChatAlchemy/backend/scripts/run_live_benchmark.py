@@ -11,7 +11,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from chatalchemy.benchmark import LiveOracle, benchmark_manifest, generate_cases, score_value, validate_cases
+from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, validate_cases
 from chatalchemy.reasoning import ChatAlchemyEngine
 
 
@@ -65,6 +65,31 @@ def stable_snapshot_hash(kind, value, records):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _source_key(value: object) -> str:
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+
+def provenance_record_f1(oracle_records, agent_records) -> float:
+    gold = {
+        (_source_key(item.get("source")), str(item.get("record")))
+        for item in oracle_records
+        if item.get("record") is not None
+    }
+    pred = {
+        (_source_key(item.get("source")), str(item.get("record")))
+        for item in agent_records
+        if item.get("record") is not None
+    }
+    if not gold and not pred:
+        return 1.0
+    if not gold or not pred:
+        return 0.0
+    tp = len(gold & pred)
+    precision = tp / len(pred)
+    recall = tp / len(gold)
+    return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+
+
 def _percentile(values: list[float], q: float) -> float:
     if not values:
         return 0.0
@@ -76,13 +101,20 @@ def _percentile(values: list[float], q: float) -> float:
 def _aggregate(rows: list[dict]) -> dict:
     scored = [float(r["task_score"]) for r in rows if r.get("task_score") is not None]
     latencies = [float(r["latency_ms"]) for r in rows]
+    claimed = [r for r in rows if int(r.get("claim_count", 0)) > 0]
+    provenance = [float(r["provenance_record_f1"]) for r in rows if r.get("provenance_record_f1") is not None]
     return {
         "n": len(rows),
         "oracle_coverage": statistics.mean(bool(r["oracle_available"]) for r in rows) if rows else 0.0,
         "routing_accuracy": statistics.mean(bool(r["routing_correct"]) for r in rows) if rows else 0.0,
         "mean_task_score": statistics.mean(scored) if scored else None,
         "execution_success": statistics.mean(bool(r["execution_ok"]) for r in rows) if rows else 0.0,
-        "mean_supported_claim_rate": statistics.mean(float(r["supported_claim_rate"]) for r in rows) if rows else 0.0,
+        "claiming_rate": len(claimed) / len(rows) if rows else 0.0,
+        "mean_supported_claim_rate_on_claimed": statistics.mean(float(r["supported_claim_rate"]) for r in claimed) if claimed else None,
+        "fully_supported_claim_case_rate": statistics.mean(
+            int(r.get("claim_count", 0)) > 0 and float(r["supported_claim_rate"]) == 1.0 for r in rows
+        ) if rows else 0.0,
+        "mean_provenance_record_f1": statistics.mean(provenance) if provenance else None,
         "median_latency_ms": statistics.median(latencies) if latencies else 0.0,
         "p95_latency_ms": _percentile(latencies, 0.95),
         "mean_api_calls": statistics.mean(int(r["api_calls"]) for r in rows) if rows else 0.0,
@@ -141,6 +173,10 @@ async def main():
             score = score_value(gold.kind, pred, gold.value) if gold is not None else None
             source_records = gold.source_records if gold is not None else []
             snapshot_hash = stable_snapshot_hash(gold.kind, gold.value, source_records) if gold is not None else None
+            agent_source_records = [
+                {"source": e.source, "record": e.source_record_id, "retrieved_at": e.retrieved_at}
+                for e in response.evidence
+            ]
             rows.append(
                 {
                     "id": case.id,
@@ -168,10 +204,8 @@ async def main():
                     "prediction": pred,
                     "oracle_source_records": source_records,
                     "oracle_snapshot_hash": snapshot_hash,
-                    "agent_source_records": [
-                        {"source": e.source, "record": e.source_record_id, "retrieved_at": e.retrieved_at}
-                        for e in response.evidence
-                    ],
+                    "agent_source_records": agent_source_records,
+                    "provenance_record_f1": provenance_record_f1(source_records, agent_source_records) if gold is not None else None,
                     "warnings": response.warnings,
                     "params": case.params,
                 }
