@@ -12,6 +12,7 @@ on:
           - ablations
           - baseline_llm_only
           - baseline_same_retrieval
+          - baseline_unrestricted_tools
           - failure_injection
           - counterfactual
       split:
@@ -187,13 +188,13 @@ jobs:
           retention-days: 90
 
   model-baseline:
-    if: ${{ inputs.experiment == 'baseline_llm_only' || inputs.experiment == 'baseline_same_retrieval' }}
+    if: ${{ inputs.experiment == 'baseline_llm_only' || inputs.experiment == 'baseline_same_retrieval' || inputs.experiment == 'baseline_unrestricted_tools' }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_MODEL: ${{ inputs.model }}
-      MODE: ${{ inputs.experiment == 'baseline_llm_only' && 'llm_only' || 'same_retrieval_llm' }}
+      MODE: ${{ inputs.experiment == 'baseline_llm_only' && 'llm_only' || inputs.experiment == 'baseline_same_retrieval' && 'same_retrieval_llm' || 'unrestricted_tool_agent' }}
     defaults:
       run:
         working-directory: ChatAlchemy/backend
