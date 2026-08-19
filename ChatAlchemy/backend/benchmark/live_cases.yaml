@@ -1,0 +1,25 @@
+cases:
+  - id: rxnorm_identity_tylenol
+    question: "What is the generic identity of Tylenol?"
+    intent: identity
+    required_sources: [RxNorm]
+  - id: dailymed_pembrolizumab
+    question: "What DailyMed label records are available for pembrolizumab?"
+    intent: label
+    required_sources: [RxNorm, DailyMed]
+  - id: fda_pembrolizumab
+    question: "What FDA approval information is available for pembrolizumab?"
+    intent: approval
+    required_sources: [RxNorm, Drugs@FDA/openFDA]
+  - id: ctgov_pembrolizumab_nsclc
+    question: "List Phase 3 trials involving pembrolizumab for non-small-cell lung cancer."
+    intent: trials
+    required_sources: [RxNorm, ClinicalTrials.gov]
+  - id: chembl_egfr
+    question: "Which drugs target EGFR?"
+    intent: target_drugs
+    required_sources: [ChEMBL]
+  - id: cross_source_egfr_nsclc
+    question: "Which FDA-approved drugs targeting EGFR also have recruiting Phase 3 trials for non-small-cell lung cancer?"
+    intent: cross_source
+    required_sources: [ChEMBL, Drugs@FDA/openFDA, ClinicalTrials.gov]
