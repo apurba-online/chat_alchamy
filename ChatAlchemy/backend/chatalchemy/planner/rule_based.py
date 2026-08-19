@@ -121,6 +121,7 @@ class RuleBasedPlanner:
     @staticmethod
     def _condition(q: str):
         explicit_patterns = [
+            r"(?:trials?|studies)\s+(?:for|of)\s+[^?]+?\s+in\s+(.+?)(?:\?|$)",
             r"(?:trials?|studies)\s+(?:involving|using|use|uses)\s+[^?]+?\s+(?:for|in)\s+(.+?)(?:\?|$)",
             r"(?:trials?|studies)\s+(?:for|in)\s+(.+?)(?:\?|$)",
             r"(?:clinicaltrials\.gov\s+studies)\s+(?:for|in)\s+(.+?)(?:\?|$)",
