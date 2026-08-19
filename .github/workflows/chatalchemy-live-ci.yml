@@ -50,6 +50,8 @@ jobs:
         with:
           node-version: '22'
       - run: npm install
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
       - name: Strict TypeScript check
         run: npm run typecheck
       - run: npm run build
