@@ -7,11 +7,12 @@ import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 
-from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, validate_cases
+from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, select_cases, validate_cases
 from chatalchemy.evaluation import FaultInjectedSource
 from chatalchemy.reasoning import ChatAlchemyEngine
 from scripts.run_live_benchmark import prediction, user_evidence
 
+PUBLIC_BENCHMARK_N = 1500
 METHOD_BY_SOURCE = {
     "rxnorm": {"resolve"},
     "dailymed": {"label_records"},
@@ -25,11 +26,13 @@ METHOD_BY_SOURCE = {
 
 def _aggregate(rows):
     scored = [float(r["task_score"]) for r in rows if r.get("task_score") is not None]
+    claimed = [r for r in rows if int(r.get("claim_count", 0)) > 0]
     return {
         "n": len(rows),
         "oracle_coverage": statistics.mean(bool(r["oracle_available"]) for r in rows) if rows else 0.0,
         "mean_task_score": statistics.mean(scored) if scored else None,
-        "mean_supported_claim_rate": statistics.mean(float(r["supported_claim_rate"]) for r in rows) if rows else 0.0,
+        "claiming_rate": len(claimed) / len(rows) if rows else 0.0,
+        "mean_supported_claim_rate_on_claimed": statistics.mean(float(r["supported_claim_rate"]) for r in claimed) if claimed else None,
         "failure_trace_rate": statistics.mean(bool(r["failure_trace_detected"]) for r in rows) if rows else 0.0,
         "qualified_or_abstained_rate": statistics.mean(bool(r["qualified_or_abstained"]) for r in rows) if rows else 0.0,
         "unsupported_claim_case_rate": statistics.mean(bool(r["unsupported_claim_case"]) for r in rows) if rows else 0.0,
@@ -40,18 +43,29 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", choices=sorted(METHOD_BY_SOURCE), required=True)
     parser.add_argument("--mode", choices=["exception", "empty"], default="exception")
-    parser.add_argument("--n", type=int, default=150)
     parser.add_argument("--seed", type=int, default=1729)
     parser.add_argument("--split", choices=["dev", "test", "stress", "all"], default="test")
+    parser.add_argument("--difficulty", choices=["easy", "medium", "hard", "all"], default="all")
+    parser.add_argument("--limit", type=int, default=150, help="0 means all selected cases requiring the source")
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--out", default="benchmark/failure-injection.json")
     args = parser.parse_args()
 
-    all_cases = generate_cases(args.n, args.seed)
+    all_cases = generate_cases(PUBLIC_BENCHMARK_N, args.seed)
     manifest = validate_cases(all_cases)
-    cases = [
-        case for case in all_cases
-        if args.source in case.sources and (args.split == "all" or case.split == args.split)
-    ]
+    cases = select_cases(
+        all_cases,
+        split=args.split,
+        difficulty=args.difficulty,
+        families=None,
+        limit=None,
+        num_shards=args.num_shards,
+        shard_index=args.shard_index,
+    )
+    cases = [case for case in cases if args.source in case.sources]
+    if args.limit != 0:
+        cases = cases[: args.limit]
     if not cases:
         raise SystemExit("No cases require the selected source under the requested filters")
 
@@ -87,6 +101,7 @@ async def main():
             rows.append(
                 {
                     "id": case.id,
+                    "task_signature": case.task_signature,
                     "split": case.split,
                     "difficulty": case.difficulty,
                     "family": case.family,
@@ -97,6 +112,7 @@ async def main():
                     "prediction": pred,
                     "oracle": gold.value if gold is not None else None,
                     "supported_claim_rate": response.supported_claim_rate,
+                    "claim_count": len(response.claims),
                     "failure_trace_detected": failed_trace,
                     "qualified_or_abstained": qualified_or_abstained,
                     "unsupported_claim_case": unsupported,
@@ -108,12 +124,16 @@ async def main():
         await asyncio.gather(engine.close(), oracle.close())
 
     result = {
-        "schema": "ChatAlchemyFailureInjection/v1",
+        "schema": "ChatAlchemyFailureInjection/v2",
         "run": {
             "source": args.source,
             "source_display_name": source_display_name,
             "mode": args.mode,
             "split_filter": args.split,
+            "difficulty_filter": args.difficulty,
+            "limit": args.limit,
+            "num_shards": args.num_shards,
+            "shard_index": args.shard_index,
             "seed": args.seed,
             "started_at_utc": started.isoformat(),
             "finished_at_utc": datetime.now(timezone.utc).isoformat(),
