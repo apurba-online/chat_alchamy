@@ -14,6 +14,7 @@ from .metrics import (
     score_value,
     set_f1,
 )
+from .selection import select_cases
 
 __all__ = [
     "BENCHMARK_VERSION",
@@ -23,6 +24,7 @@ __all__ = [
     "validate_cases",
     "benchmark_manifest",
     "benchmark_fingerprint",
+    "select_cases",
     "LiveOracle",
     "OracleResult",
     "score_value",
