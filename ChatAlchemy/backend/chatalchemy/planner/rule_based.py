@@ -111,6 +111,17 @@ class RuleBasedPlanner:
 
     @staticmethod
     def _condition(q: str):
+        explicit_patterns = [
+            r"(?:trials?|studies)(?:\s+(?:registered|using\s+[^?]+?))?\s+(?:for|in)\s+(.+?)(?:\?|$)",
+            r"(?:clinicaltrials\.gov\s+studies)\s+(?:for|in)\s+(.+?)(?:\?|$)",
+        ]
+        for pattern in explicit_patterns:
+            m = re.search(pattern, q, re.I)
+            if m:
+                text = m.group(1).strip(" .?")
+                if text:
+                    return text
+
         matches = list(re.finditer(r"\b(?:for|with|in)\s+(.+?)(?:\?|$)", q, re.I))
         for m in reversed(matches):
             text = m.group(1).strip(" .?")
