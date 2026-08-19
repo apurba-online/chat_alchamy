@@ -29,17 +29,30 @@ jobs:
         run: PYTHONPATH=. pytest -m 'not live' -q
       - name: Publication artifact gate
         run: PYTHONPATH=. python scripts/validate_publication_artifact.py
-      - name: Generate publication benchmark
-        run: PYTHONPATH=. python scripts/generate_livebiobench.py --n 1500 --seed 1729 --out benchmark/livebiobench-ci.json
-      - name: Validate benchmark cardinality
+      - name: Generate frozen publication benchmark
+        run: PYTHONPATH=. python scripts/generate_livebiobench.py --n 1500 --seed 1729 --out benchmark/livebiobench-ci.json --manifest benchmark/livebiobench-ci.manifest.json
+      - name: Validate benchmark protocol manifest
         run: |
           python - <<'PY'
           import json
-          data = json.load(open('benchmark/livebiobench-ci.json'))
-          assert len(data) == 1500
-          assert len({item['id'] for item in data}) == 1500
-          print('LiveBioEvidenceBench generation passed')
+          cases = json.load(open('benchmark/livebiobench-ci.json'))
+          manifest = json.load(open('benchmark/livebiobench-ci.manifest.json'))
+          assert len(cases) == 1500
+          assert len({item['id'] for item in cases}) == 1500
+          assert len({item['task_signature'] for item in cases}) == 1500
+          assert manifest['case_count'] == 1500
+          assert manifest['task_signature_count'] == 1500
+          assert manifest['split_counts'] == {'dev': 300, 'test': 900, 'stress': 300}
+          assert manifest['fingerprint_sha256']
+          assert manifest['schema'].startswith('LiveBioEvidenceBench-v2')
+          print('LiveBioEvidenceBench protocol gate passed:', manifest['fingerprint_sha256'])
           PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: livebiobench-protocol
+          path: |
+            ChatAlchemy/backend/benchmark/livebiobench-ci.json
+            ChatAlchemy/backend/benchmark/livebiobench-ci.manifest.json
 
   frontend-build:
     runs-on: ubuntu-latest
@@ -75,8 +88,8 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Live API contract tests
         run: PYTHONPATH=. pytest -m live -q
-      - name: Independent live benchmark smoke
-        run: PYTHONPATH=. python scripts/run_live_benchmark.py --n 8 --seed 1729 --out benchmark/live-smoke.json
+      - name: Independent live benchmark smoke on frozen IDs
+        run: PYTHONPATH=. python scripts/run_live_benchmark.py --limit 8 --seed 1729 --out benchmark/live-smoke.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
