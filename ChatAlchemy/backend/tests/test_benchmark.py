@@ -13,7 +13,9 @@ def test_publication_scale_generator_is_deterministic_and_validated():
     assert manifest["case_count"] == 1500
     assert manifest["split_counts"] == {"dev": 300, "test": 900, "stress": 300}
     assert len({x.id for x in a}) == 1500
-    assert len({x.question for x in a}) == 1500
+    assert len({x.task_signature for x in a}) == 1500
+    assert manifest["task_signature_count"] == 1500
+    assert 0 < manifest["surface_question_count"] <= 1500
     assert {x.family for x in a} >= {
         "identity",
         "label",
