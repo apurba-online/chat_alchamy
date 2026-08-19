@@ -4,11 +4,12 @@ import argparse
 import asyncio
 import json
 import statistics
+from datetime import datetime, timezone
 from pathlib import Path
 
-from chatalchemy.benchmark import LiveOracle, generate_cases, score_value
+from chatalchemy.benchmark import LiveOracle, generate_cases, score_value, select_cases, validate_cases
 from chatalchemy.reasoning import ChatAlchemyEngine
-from scripts.run_live_benchmark import prediction, user_evidence
+from scripts.run_live_benchmark import prediction, provenance_record_f1, user_evidence
 
 VARIANTS = {
     "full": {},
@@ -19,77 +20,120 @@ VARIANTS = {
 }
 
 
-async def evaluate(name: str, n: int, seed: int):
-    engine = ChatAlchemyEngine(**VARIANTS[name])
-    oracle = LiveOracle()
-    case_rows = []
-    try:
-        for case in generate_cases(n, seed):
-            try:
-                gold = await oracle.execute(case)
-            except Exception as exc:
-                case_rows.append(
-                    {
-                        "id": case.id,
-                        "family": case.family,
-                        "oracle_available": False,
-                        "oracle_error": f"{type(exc).__name__}: {exc}",
-                        "task_score": None,
-                    }
-                )
-                continue
-            response = await engine.answer(case.question, user_evidence=user_evidence(case))
-            case_rows.append(
-                {
-                    "id": case.id,
-                    "family": case.family,
-                    "oracle_available": True,
-                    "task_score": score_value(gold.kind, prediction(case, response), gold.value),
-                    "supported_claim_rate": response.supported_claim_rate,
-                    "execution_ok": all(trace.ok for trace in response.traces) if response.traces else False,
-                }
-            )
-    finally:
-        await asyncio.gather(engine.close(), oracle.close())
-
-    scored = [row for row in case_rows if row.get("task_score") is not None]
-    by_family = {}
-    for family in sorted({row["family"] for row in case_rows}):
-        subset = [row for row in case_rows if row["family"] == family]
-        family_scored = [row["task_score"] for row in subset if row.get("task_score") is not None]
-        by_family[family] = {
-            "n": len(subset),
-            "oracle_coverage": sum(row["oracle_available"] for row in subset) / len(subset),
-            "mean_task_score": statistics.mean(family_scored) if family_scored else None,
-        }
+def _aggregate(rows: list[dict]) -> dict:
+    scored = [float(row["task_score"]) for row in rows if row.get("task_score") is not None]
+    claimed = [row for row in rows if int(row.get("claim_count", 0)) > 0]
+    provenance = [float(row["provenance_record_f1"]) for row in rows if row.get("provenance_record_f1") is not None]
     return {
-        "system": name,
-        "n": len(case_rows),
-        "oracle_coverage": len(scored) / len(case_rows) if case_rows else 0,
-        "mean_task_score": statistics.mean(row["task_score"] for row in scored) if scored else None,
-        "mean_supported_claim_rate": statistics.mean(
-            row.get("supported_claim_rate", 0.0) for row in scored
-        ) if scored else None,
-        "execution_success": statistics.mean(
-            bool(row.get("execution_ok")) for row in scored
-        ) if scored else None,
-        "by_family": by_family,
-        "cases": case_rows,
+        "n": len(rows),
+        "oracle_coverage": statistics.mean(bool(row["oracle_available"]) for row in rows) if rows else 0.0,
+        "mean_task_score": statistics.mean(scored) if scored else None,
+        "execution_success": statistics.mean(bool(row["execution_ok"]) for row in rows) if rows else 0.0,
+        "claiming_rate": len(claimed) / len(rows) if rows else 0.0,
+        "mean_supported_claim_rate_on_claimed": statistics.mean(float(row["supported_claim_rate"]) for row in claimed) if claimed else None,
+        "mean_provenance_record_f1": statistics.mean(provenance) if provenance else None,
     }
 
 
-async def main():
+async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n", type=int, default=128)
     parser.add_argument("--seed", type=int, default=1729)
-    parser.add_argument("--out", default="benchmark/ablations.json")
+    parser.add_argument("--split", choices=["dev", "test", "stress", "all"], default="dev")
+    parser.add_argument("--difficulty", choices=["easy", "medium", "hard", "all"], default="all")
+    parser.add_argument("--limit", type=int, default=128, help="0 means all cases after filtering")
     parser.add_argument("--variants", nargs="*", choices=list(VARIANTS), default=list(VARIANTS))
+    parser.add_argument("--out", default="benchmark/ablations.json")
     args = parser.parse_args()
-    rows = [await evaluate(name, args.n, args.seed) for name in args.variants]
+
+    all_cases = generate_cases(1500, args.seed)
+    manifest = validate_cases(all_cases)
+    cases = select_cases(
+        all_cases,
+        split=args.split,
+        difficulty=args.difficulty,
+        limit=None if args.limit == 0 else args.limit,
+    )
+    if not cases:
+        raise SystemExit("No benchmark cases matched the requested filters")
+
+    engines = {name: ChatAlchemyEngine(**VARIANTS[name]) for name in args.variants}
+    oracle = LiveOracle()
+    rows_by_variant: dict[str, list[dict]] = {name: [] for name in args.variants}
+    started = datetime.now(timezone.utc)
+    try:
+        for case in cases:
+            gold = None
+            oracle_error = None
+            try:
+                gold = await oracle.execute(case)
+            except Exception as exc:
+                oracle_error = f"{type(exc).__name__}: {exc}"
+
+            for name, engine in engines.items():
+                response = await engine.answer(case.question, user_evidence=user_evidence(case))
+                pred = prediction(case, response)
+                score = score_value(gold.kind, pred, gold.value) if gold is not None else None
+                oracle_records = gold.source_records if gold is not None else []
+                agent_records = [
+                    {"source": evidence.source, "record": evidence.source_record_id}
+                    for evidence in response.evidence
+                ]
+                rows_by_variant[name].append(
+                    {
+                        "id": case.id,
+                        "split": case.split,
+                        "difficulty": case.difficulty,
+                        "family": case.family,
+                        "task_score": score,
+                        "oracle_available": gold is not None,
+                        "oracle_error": oracle_error,
+                        "oracle": gold.value if gold is not None else None,
+                        "prediction": pred,
+                        "execution_ok": all(trace.ok for trace in response.traces) if response.traces else False,
+                        "supported_claim_rate": response.supported_claim_rate,
+                        "claim_count": len(response.claims),
+                        "evidence_count": len(response.evidence),
+                        "api_calls": len(response.traces),
+                        "provenance_record_f1": provenance_record_f1(oracle_records, agent_records) if gold is not None else None,
+                    }
+                )
+    finally:
+        await asyncio.gather(*(engine.close() for engine in engines.values()), oracle.close(), return_exceptions=True)
+
+    systems = []
+    for name in args.variants:
+        rows = rows_by_variant[name]
+        systems.append(
+            {
+                "system": name,
+                "config": VARIANTS[name],
+                "summary": _aggregate(rows),
+                "by_family": {
+                    family: _aggregate([row for row in rows if row["family"] == family])
+                    for family in sorted({row["family"] for row in rows})
+                },
+                "cases": rows,
+            }
+        )
+
+    result = {
+        "schema": "ChatAlchemyAblationRun/v2",
+        "run": {
+            "started_at_utc": started.isoformat(),
+            "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+            "seed": args.seed,
+            "split_filter": args.split,
+            "difficulty_filter": args.difficulty,
+            "limit": args.limit,
+            "oracle_snapshot_policy": "one independent live oracle execution per case shared across all variants",
+        },
+        "benchmark": {**manifest, "seed": args.seed},
+        "systems": systems,
+    }
     output = Path(args.out)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(rows, indent=2))
-    print(json.dumps([{k: v for k, v in row.items() if k != "cases"} for row in rows], indent=2))
+    output.write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps({"run": result["run"], "benchmark": result["benchmark"], "systems": [{"system": item["system"], "summary": item["summary"]} for item in systems]}, indent=2))
 
 
 if __name__ == "__main__":
