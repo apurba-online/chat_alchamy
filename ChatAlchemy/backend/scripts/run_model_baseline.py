@@ -11,12 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from chatalchemy.benchmark import EvaluationOracle, generate_cases, score_value, select_cases, validate_cases
+from chatalchemy.evaluation import UnrestrictedToolAgent
 from chatalchemy.llm import LLMClient
 from chatalchemy.reasoning import ChatAlchemyEngine
 from scripts.run_live_benchmark import prediction as chatalchemy_prediction
 from scripts.run_live_benchmark import user_evidence
 
-PROMPT_VERSION = "model-baseline-v3"
+PROMPT_VERSION = "model-baseline-v4"
 PUBLIC_BENCHMARK_N = 1500
 
 
@@ -95,6 +96,11 @@ def _evidence_payload(response) -> list[dict[str, Any]]:
     ]
 
 
+def _add_usage(total: dict[str, int], usage: dict[str, int]) -> None:
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        total[key] = total.get(key, 0) + int(usage.get(key, 0))
+
+
 def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     baseline = [float(row["task_score"]) for row in rows if row.get("task_score") is not None]
     full = [float(row["chatalchemy_task_score"]) for row in rows if row.get("chatalchemy_task_score") is not None]
@@ -113,12 +119,16 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "median_baseline_latency_ms": statistics.median(float(row["baseline_latency_ms"]) for row in rows) if rows else 0.0,
         "model_error_rate": statistics.mean(bool(row.get("model_error")) for row in rows) if rows else 0.0,
         "retrieval_error_rate": statistics.mean(bool(row.get("retrieval_error")) for row in rows) if rows else 0.0,
+        "mean_model_input_tokens": statistics.mean(int(row["model_usage"].get("input_tokens", 0)) for row in rows) if rows else 0.0,
+        "mean_model_output_tokens": statistics.mean(int(row["model_usage"].get("output_tokens", 0)) for row in rows) if rows else 0.0,
+        "mean_model_total_tokens": statistics.mean(int(row["model_usage"].get("total_tokens", 0)) for row in rows) if rows else 0.0,
+        "mean_tool_calls": statistics.mean(int(row.get("tool_call_count", 0)) for row in rows) if rows else 0.0,
     }
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["llm_only", "same_retrieval_llm"], required=True)
+    parser.add_argument("--mode", choices=["llm_only", "same_retrieval_llm", "unrestricted_tool_agent"], required=True)
     parser.add_argument("--model", default=os.getenv("OPENAI_MODEL", "gpt-5-mini"))
     parser.add_argument("--seed", type=int, default=1729)
     parser.add_argument("--split", choices=["dev", "test", "stress", "all"], default="test")
@@ -127,6 +137,7 @@ async def main() -> None:
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--max-results", type=int, default=20)
+    parser.add_argument("--max-tool-steps", type=int, default=6)
     parser.add_argument("--oracle-snapshot", default=None)
     parser.add_argument("--out", default="benchmark/model-baseline.json")
     args = parser.parse_args()
@@ -154,6 +165,12 @@ async def main() -> None:
         snapshot_path=args.oracle_snapshot,
     )
     engine = ChatAlchemyEngine()
+    tool_source_engine = ChatAlchemyEngine() if args.mode == "unrestricted_tool_agent" else None
+    tool_agent = (
+        UnrestrictedToolAgent(llm, tool_source_engine.sources, max_steps=args.max_tool_steps, max_results=args.max_results)
+        if tool_source_engine is not None
+        else None
+    )
     rows: list[dict[str, Any]] = []
     started = datetime.now(timezone.utc)
     try:
@@ -174,15 +191,33 @@ async def main() -> None:
 
             full_pred = chatalchemy_prediction(case, full_response) if full_response is not None else None
             full_score = score_value(gold.kind, full_pred, gold.value) if gold is not None and full_pred is not None else None
-            evidence = _evidence_payload(full_response) if args.mode == "same_retrieval_llm" and full_response is not None else None
+
+            evidence = None
+            tool_trace: list[dict[str, Any]] = []
+            usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            if args.mode == "same_retrieval_llm":
+                evidence = _evidence_payload(full_response) if full_response is not None else []
+            elif args.mode == "unrestricted_tool_agent":
+                assert tool_agent is not None
+                try:
+                    retrieval = await tool_agent.retrieve(
+                        case.question,
+                        uploaded_candidates=case.params.get("candidates") if case.family.startswith("user_") else None,
+                    )
+                    evidence = UnrestrictedToolAgent._evidence_payload(retrieval["evidence"])
+                    tool_trace = retrieval["trace"]
+                    _add_usage(usage, retrieval["usage"])
+                except Exception as exc:
+                    retrieval_error = f"{type(exc).__name__}: {exc}"
+                    evidence = []
 
             instructions = (
                 "You are being evaluated on biomedical evidence reasoning. "
                 "Return only the requested JSON fields. Do not explain your answer. "
                 + _task_format(case)
             )
-            if args.mode == "same_retrieval_llm":
-                instructions += " Use only the supplied evidence objects; do not add facts from memory."
+            if args.mode in {"same_retrieval_llm", "unrestricted_tool_agent"}:
+                instructions += " Use only the supplied retrieved evidence and uploaded candidates; do not invent source records."
 
             model_input = {
                 "question": case.question,
@@ -200,6 +235,7 @@ async def main() -> None:
                     "benchmark_answer",
                     _schema(case),
                 )
+                _add_usage(usage, llm.last_usage)
             except Exception as exc:
                 model_error = f"{type(exc).__name__}: {exc}"
             baseline_latency = (time.perf_counter() - model_started) * 1000
@@ -225,6 +261,9 @@ async def main() -> None:
                     "model_error": model_error,
                     "retrieval_error": retrieval_error,
                     "evidence_count": len(evidence or []),
+                    "tool_call_count": sum(not step.get("decision", {}).get("done", False) and step.get("decision", {}).get("tool") != "none" for step in tool_trace),
+                    "tool_trace": tool_trace,
+                    "model_usage": usage,
                     "baseline_latency_ms": baseline_latency,
                     "total_case_latency_ms": (time.perf_counter() - case_started) * 1000,
                 }
@@ -233,6 +272,8 @@ async def main() -> None:
         await oracle.close()
         await llm.close()
         await engine.close()
+        if tool_source_engine is not None:
+            await tool_source_engine.close()
 
     finished = datetime.now(timezone.utc)
     by_family = {
@@ -240,7 +281,7 @@ async def main() -> None:
         for family in sorted({row["family"] for row in rows})
     }
     result = {
-        "schema": "ChatAlchemyModelBaselineRun/v3",
+        "schema": "ChatAlchemyModelBaselineRun/v4",
         "run": {
             "mode": args.mode,
             "model": args.model,
@@ -252,6 +293,7 @@ async def main() -> None:
             "num_shards": args.num_shards,
             "shard_index": args.shard_index,
             "max_results": args.max_results,
+            "max_tool_steps": args.max_tool_steps if args.mode == "unrestricted_tool_agent" else 0,
             "started_at_utc": started.isoformat(),
             "finished_at_utc": finished.isoformat(),
             "git_sha": os.getenv("GITHUB_SHA"),
