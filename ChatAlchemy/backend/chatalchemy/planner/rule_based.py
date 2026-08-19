@@ -38,9 +38,9 @@ class RuleBasedPlanner:
                 final_operation="intersection",
             )
         if any(x in low for x in ["pubchem", "smiles", "iupac", "chemical structure", "compound properties"]):
-            drug = self._drug_after_keyword(q, ["of", "for", "about"]) or self._tail_entity(q)
+            drug = self._compound_name(q)
             return QueryPlan(question=q, intent="compound", entities=[Entity(text=drug, type="compound")] if drug else [], operations=[Operation(source="pubchem", action="compound", arguments={"name": drug})], final_operation="list")
-        if target and ("drug" in low or "target" in low or "inhibitor" in low or "mechanism" in low):
+        if target and ("drug" in low or "target" in low or "inhibitor" in low or "mechanism" in low or "molecule" in low):
             return QueryPlan(question=q, intent="target_drugs", entities=[Entity(text=target, type="target")], operations=[Operation(source="chembl", action="target_drugs", arguments={"target": target})], final_operation="list")
         if any(x in low for x in ["gene", "ensembl", "open targets", "opentargets"]):
             gene = self._gene(q)
@@ -75,7 +75,7 @@ class RuleBasedPlanner:
             drug = self._drug_after_keyword(q, ["for", "of", "is", "about"]) or self._tail_entity(q)
             return QueryPlan(question=q, intent="approval", entities=[Entity(text=drug, type="drug")] if drug else [], operations=[Operation(source="rxnorm", action="resolve", arguments={"drug": drug}), Operation(source="openfda", action="approval_records", arguments={"drug": drug})], final_operation="list")
         if any(x in low for x in ["generic identity", "generic ingredient", "generic name", "canonical", "rxcui", "identify", "resolve"]):
-            drug = self._drug_after_keyword(q, ["of", "for", "is"]) or self._tail_entity(q)
+            drug = self._identity_drug(q)
             return QueryPlan(question=q, intent="identity", entities=[Entity(text=drug, type="drug")] if drug else [], operations=[Operation(source="rxnorm", action="resolve", arguments={"drug": drug})], final_operation="identity")
         return QueryPlan(question=q, intent="general", operations=[], final_operation="generate")
 
@@ -95,7 +95,13 @@ class RuleBasedPlanner:
 
     @staticmethod
     def _target(q: str):
-        for pattern in [r"targeting\s+([A-Za-z0-9_-]{2,20})", r"target\s+([A-Za-z0-9_-]{2,20})", r"for\s+([A-Z0-9-]{2,12})\b", r"([A-Z0-9-]{2,12})\s+inhibitors?"]:
+        patterns = [
+            r"targeting\s+([A-Za-z0-9_-]{2,20})",
+            r"\btarget\s+([A-Za-z0-9_-]{2,20})",
+            r"\bfor\s+([A-Z0-9-]{2,12})\b",
+            r"\b([A-Z0-9-]{2,12})\s+inhibitors?\b",
+        ]
+        for pattern in patterns:
             m = re.search(pattern, q)
             if m and m.group(1).upper() not in {"FDA", "PHASE"}:
                 return m.group(1).upper()
@@ -103,16 +109,20 @@ class RuleBasedPlanner:
 
     @staticmethod
     def _gene(q: str):
+        m = re.search(r"\bgene\s+([A-Za-z0-9-]{2,20})\b", q, re.I)
+        if m:
+            return m.group(1).upper()
         m = re.search(r"\b([A-Z][A-Z0-9-]{1,14})\b", q)
         if m and m.group(1) not in {"FDA", "DNA", "RNA", "NCT", "SPL"}:
             return m.group(1)
-        m = re.search(r"(?:gene|target)\s+([A-Za-z0-9-]{2,20})", q, re.I)
+        m = re.search(r"(?:target)\s+([A-Za-z0-9-]{2,20})", q, re.I)
         return m.group(1).upper() if m else None
 
     @staticmethod
     def _condition(q: str):
         explicit_patterns = [
-            r"(?:trials?|studies)(?:\s+(?:registered|using\s+[^?]+?))?\s+(?:for|in)\s+(.+?)(?:\?|$)",
+            r"(?:trials?|studies)\s+(?:involving|using|use|uses)\s+[^?]+?\s+(?:for|in)\s+(.+?)(?:\?|$)",
+            r"(?:trials?|studies)\s+(?:for|in)\s+(.+?)(?:\?|$)",
             r"(?:clinicaltrials\.gov\s+studies)\s+(?:for|in)\s+(.+?)(?:\?|$)",
         ]
         for pattern in explicit_patterns:
@@ -136,16 +146,47 @@ class RuleBasedPlanner:
     def _drug_for_trial(q: str):
         if "uploaded" in q.lower():
             return None
-        for pattern in [r"(?:involving|involve|using|of)\s+([A-Za-z0-9][A-Za-z0-9 ._-]{1,60}?)(?:\s+for\s+|\s+in\s+|\?|$)", r"trials?\s+(?:for|of)\s+([A-Za-z0-9][A-Za-z0-9 ._-]{1,60}?)(?:\s+for\s+|\s+in\s+|\?|$)"]:
+        patterns = [
+            r"(?:trials?|studies)\s+(?:involving|using|use|uses)\s+([A-Za-z0-9][A-Za-z0-9 ._-]{1,60}?)(?:\s+for\s+|\s+in\s+|\?|$)",
+            r"(?:involving|involve|using|use|uses)\s+([A-Za-z0-9][A-Za-z0-9 ._-]{1,60}?)(?:\s+for\s+|\s+in\s+|\?|$)",
+            r"trials?\s+(?:for|of)\s+([A-Za-z0-9][A-Za-z0-9 ._-]{1,60}?)(?:\s+for\s+|\s+in\s+|\?|$)",
+        ]
+        for pattern in patterns:
             m = re.search(pattern, q, re.I)
             if m:
                 return m.group(1).strip(" .?")
         return None
 
     @staticmethod
+    def _identity_drug(q: str):
+        patterns = [
+            r"\b(?:identify|resolve)\s+(?:drug\s+)?([A-Za-z0-9][A-Za-z0-9 ._-]{0,60}?)(?:\s+using\s+RxNorm|\s+with\s+RxNorm|\?|$)",
+            r"\b(?:generic\s+(?:identity|name|ingredient)|canonical\s+(?:drug\s+)?identity|RxCUI(?:-linked)?\s+(?:generic\s+)?identity)\s+(?:of|for)\s+([A-Za-z0-9][A-Za-z0-9 ._-]{0,60}?)(?:\?|$)",
+            r"\bcorresponds\s+to\s+([A-Za-z0-9][A-Za-z0-9 ._-]{0,60}?)(?:\?|$)",
+            r"\bUsing\s+RxNorm,\s*identify\s+([A-Za-z0-9][A-Za-z0-9 ._-]{0,60}?)(?:\?|$)",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, q, re.I)
+            if m:
+                return m.group(1).strip(" .?")
+        return RuleBasedPlanner._drug_after_keyword(q, ["of", "for", "is"]) or RuleBasedPlanner._tail_entity(q)
+
+    @staticmethod
+    def _compound_name(q: str):
+        patterns = [
+            r"\b(?:for|of|about)\s+([A-Za-z0-9][A-Za-z0-9 ._-]{0,60}?)(?:\?|$)",
+            r"\blook\s+up\s+(?:PubChem\s+compound\s+properties\s+for\s+)?([A-Za-z0-9][A-Za-z0-9 ._-]{0,60}?)(?:\s+in\s+PubChem|\?|$)",
+        ]
+        for pattern in patterns:
+            m = re.search(pattern, q, re.I)
+            if m:
+                return m.group(1).strip(" .?")
+        return RuleBasedPlanner._tail_entity(q)
+
+    @staticmethod
     def _drug_after_keyword(q: str, keywords: list[str]):
         for keyword in keywords:
-            m = re.search(rf"\b{re.escape(keyword)}\s+([A-Za-z0-9][A-Za-z0-9 ._-]{{1,60}}?)(?:\?|$)", q, re.I)
+            m = re.search(rf"\b{re.escape(keyword)}\s+([A-Za-z0-9][A-Za-z0-9 ._-]{{0,60}}?)(?:\?|$)", q, re.I)
             if m:
                 return re.sub(r"^(?:drug|brand)\s+", "", m.group(1).strip(" .?"), flags=re.I)
         return None
