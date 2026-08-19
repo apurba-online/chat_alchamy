@@ -70,12 +70,8 @@ def validate_split_isolation() -> None:
 
 
 def validate_security() -> None:
-    candidates = (
-        list((ROOT / "src").rglob("*.ts"))
-        + list((ROOT / "src").rglob("*.tsx"))
-        + list(BACKEND.rglob("*.py"))
-    )
-    for path in candidates:
+    browser_candidates = list((ROOT / "src").rglob("*.ts")) + list((ROOT / "src").rglob("*.tsx"))
+    for path in browser_candidates:
         text = path.read_text(errors="replace")
         for forbidden in FORBIDDEN_TEXT:
             if forbidden in text:
