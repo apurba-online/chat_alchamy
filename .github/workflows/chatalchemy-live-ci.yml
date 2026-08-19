@@ -27,6 +27,8 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Unit and mocked integration tests
         run: PYTHONPATH=. pytest -m 'not live' -q
+      - name: Publication artifact gate
+        run: PYTHONPATH=. python scripts/validate_publication_artifact.py
       - name: Generate publication benchmark
         run: PYTHONPATH=. python scripts/generate_livebiobench.py --n 1500 --seed 1729 --out benchmark/livebiobench-ci.json
       - name: Validate benchmark cardinality
