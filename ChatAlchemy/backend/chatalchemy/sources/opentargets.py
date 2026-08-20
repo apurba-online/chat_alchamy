@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import Any
 
 from ..models import EvidenceItem
 from .base import LiveSource
@@ -15,26 +16,39 @@ class OpenTargetsSource(LiveSource):
     def _normalise_name(text: str) -> str:
         return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
 
+    async def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        """Execute GraphQL and treat a 200-with-errors response as a source failure.
+
+        GraphQL transports commonly return HTTP 200 even when the query itself
+        failed validation or execution. If those errors are ignored, the caller
+        can incorrectly report a successful zero-result query. ChatAlchemy must
+        distinguish source failure from a genuine empty evidence set.
+        """
+        payload = await self._post_json(
+            self.endpoint,
+            {"query": query, "variables": variables},
+        )
+        errors = payload.get("errors") or []
+        if errors:
+            messages = "; ".join(str(item.get("message") or item) for item in errors[:5])
+            raise RuntimeError(f"Open Targets GraphQL error: {messages}")
+        return payload
+
     async def _search_hit(self, query_text: str, entity: str) -> dict | None:
-        # Match the current Open Targets entity-search contract used by the
-        # official Open Targets MCP implementation: search all entity types,
-        # then filter the returned hits locally. Passing entityNames in the
-        # hosted API has proven brittle across deployments and can yield an
-        # empty hit set for valid disease terms such as NSCLC.
+        # Search all entity types and filter locally. This makes disease/target
+        # resolution robust to wording variants while still validating the
+        # entity type before an identifier is used downstream.
         query = '''
         query Search($q: String!) {
           search(queryString: $q, page: {index: 0, size: 20}) {
-            hits { id entity name description }
+            hits { id entity name description score }
           }
         }
         '''
         variants = list(dict.fromkeys([query_text, re.sub(r"[-–—]+", " ", query_text)]))
         hits: list[dict] = []
         for variant in variants:
-            payload = await self._post_json(
-                self.endpoint,
-                {"query": query, "variables": {"q": variant}},
-            )
+            payload = await self._graphql(query, {"q": variant})
             returned = (((payload.get("data") or {}).get("search") or {}).get("hits") or [])
             hits.extend(hit for hit in returned if str(hit.get("entity") or "").lower() == entity.lower())
 
@@ -49,7 +63,7 @@ class OpenTargetsSource(LiveSource):
         wanted = self._normalise_name(query_text)
         wanted_tokens = set(wanted.split())
 
-        def score(hit: dict) -> tuple[float, int]:
+        def score(hit: dict) -> tuple[float, float, int]:
             name = self._normalise_name(str(hit.get("name") or ""))
             description = self._normalise_name(str(hit.get("description") or ""))
             name_tokens = set(name.split())
@@ -57,7 +71,12 @@ class OpenTargetsSource(LiveSource):
             exact = 1.0 if name == wanted else 0.0
             containment = 1.0 if wanted and (wanted in name or name in wanted) else 0.0
             description_overlap = len(wanted_tokens & set(description.split())) / max(1, len(wanted_tokens))
-            return (exact * 100 + containment * 20 + overlap * 10 + description_overlap, -len(name))
+            upstream_score = float(hit.get("score") or 0.0)
+            return (
+                exact * 100 + containment * 20 + overlap * 10 + description_overlap,
+                upstream_score,
+                -len(name),
+            )
 
         return max(unique.values(), key=score)
 
@@ -68,10 +87,12 @@ class OpenTargetsSource(LiveSource):
     async def _drug_name(self, chembl_id: str) -> str:
         query = '''query Drug($id: String!) { drug(chemblId: $id) { id name } }'''
         try:
-            payload = await self._post_json(self.endpoint, {"query": query, "variables": {"id": chembl_id}})
+            payload = await self._graphql(query, {"id": chembl_id})
             drug = (payload.get("data") or {}).get("drug") or {}
             return str(drug.get("name") or chembl_id)
         except Exception:
+            # Drug-name enrichment is optional; the ChEMBL identifier still
+            # provides a valid provenance record if this secondary lookup fails.
             return chembl_id
 
     async def gene_details(self, gene: str, max_results: int = 10) -> list[EvidenceItem]:
@@ -100,7 +121,7 @@ class OpenTargetsSource(LiveSource):
           }
         }
         '''
-        payload = await self._post_json(self.endpoint, {"query": query, "variables": {"id": target_id}})
+        payload = await self._graphql(query, {"id": target_id})
         obj = (payload.get("data") or {}).get("target") or {}
         if not obj:
             return []
@@ -140,9 +161,7 @@ class OpenTargetsSource(LiveSource):
 
         clinical_rows = ((obj.get("drugAndClinicalCandidates") or {}).get("rows") or [])[:max_results]
         drug_ids = list(dict.fromkeys(str(row.get("drugId")) for row in clinical_rows if row.get("drugId")))
-        names = dict(
-            await asyncio.gather(*((lambda drug_id: self._named_pair(drug_id))(drug_id) for drug_id in drug_ids))
-        ) if drug_ids else {}
+        names = dict(await asyncio.gather(*(self._named_pair(drug_id) for drug_id in drug_ids))) if drug_ids else {}
 
         for row in clinical_rows:
             drug_id = row.get("drugId")
@@ -178,6 +197,9 @@ class OpenTargetsSource(LiveSource):
         if not disease_id:
             return []
 
+        # Open Targets 26.06 documents orderByScore as "<column> <order>".
+        # Using an incomplete value such as "score" can produce GraphQL errors
+        # inside an HTTP 200 response, which previously looked like a valid zero.
         query = '''
         query Disease($id: String!) {
           disease(efoId: $id) {
@@ -185,7 +207,7 @@ class OpenTargetsSource(LiveSource):
             name
             associatedTargets(
               page: {index: 0, size: 50}
-              orderByScore: "score"
+              orderByScore: "score desc"
               enableIndirect: true
             ) {
               rows { target { id approvedSymbol approvedName } score }
@@ -193,7 +215,7 @@ class OpenTargetsSource(LiveSource):
           }
         }
         '''
-        payload = await self._post_json(self.endpoint, {"query": query, "variables": {"id": disease_id}})
+        payload = await self._graphql(query, {"id": disease_id})
         obj = (payload.get("data") or {}).get("disease") or {}
         if not obj:
             return []
