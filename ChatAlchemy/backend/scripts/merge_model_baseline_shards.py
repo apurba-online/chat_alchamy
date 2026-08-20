@@ -12,7 +12,7 @@ def _load(path: Path) -> dict:
     payload = json.loads(path.read_text())
     if not isinstance(payload, dict) or not isinstance(payload.get("cases"), list):
         raise ValueError(f"{path} is not a model-baseline result")
-    if payload.get("schema") != "ChatAlchemyModelBaselineRun/v4":
+    if payload.get("schema") != "ChatAlchemyModelBaselineRun/v5":
         raise ValueError(f"unexpected model-baseline schema in {path}: {payload.get('schema')}")
     return payload
 
@@ -39,6 +39,7 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
     invariant_keys = (
         "mode", "model", "prompt_version", "seed", "split_filter", "difficulty_filter",
         "max_results", "max_tool_steps", "oracle_mode", "oracle_snapshot_file_sha256",
+        "latency_definition", "same_retrieval_latency_note",
     )
     first_meta = runs[0]["run"]
     for run in runs[1:]:
@@ -58,7 +59,7 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
         for family in sorted({str(row.get("family")) for row in rows})
     }
     return {
-        "schema": "ChatAlchemyModelBaselineRunMerged/v1",
+        "schema": "ChatAlchemyModelBaselineRunMerged/v2",
         "run": {
             **{key: first_meta.get(key) for key in invariant_keys},
             "num_shards": declared,
