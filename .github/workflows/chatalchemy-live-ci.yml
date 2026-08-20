@@ -96,3 +96,51 @@ jobs:
           name: chatalchemy-live-smoke
           path: ChatAlchemy/backend/benchmark/live-smoke.json
           if-no-files-found: ignore
+
+  model-credential-smoke:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/agent/chatalchemy-paper-system' }}
+    needs: backend-unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: gpt-5.1-2025-11-13
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Detect repository model secret without printing it
+        id: credential
+        shell: bash
+        run: |
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "OPENAI_API_KEY repository secret is configured."
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "OPENAI_API_KEY repository secret is not configured."
+          fi
+      - name: One-case server-side model smoke
+        if: ${{ steps.credential.outputs.available == 'true' }}
+        run: >-
+          PYTHONPATH=. python scripts/run_model_baseline.py
+          --mode llm_only
+          --model gpt-5.1-2025-11-13
+          --seed 1729
+          --split dev
+          --limit 1
+          --out benchmark/model-credential-smoke.json
+      - uses: actions/upload-artifact@v4
+        if: ${{ steps.credential.outputs.available == 'true' && always() }}
+        with:
+          name: model-credential-smoke
+          path: ChatAlchemy/backend/benchmark/model-credential-smoke.json
+          if-no-files-found: ignore
+          retention-days: 7
