@@ -49,7 +49,6 @@ class LiveOracle(_BaseLiveOracle):
             )
             ids = [str(value) for value in (exact.get("idGroup") or {}).get("rxnormId", []) or []]
         except Exception:
-            # Approximate term resolution is the intended fallback for aliases.
             ids = []
 
         if not ids:
@@ -142,13 +141,6 @@ class LiveOracle(_BaseLiveOracle):
         return str(best["id"])
 
     async def _gene(self, gene: str, limit: int = 20):
-        """Current direct Open Targets target query used by the frozen oracle.
-
-        Current GraphQL replaces the backing-model `drugId` field with
-        `drug { id name }` and excludes `targetId` from ClinicalTargetFromTarget.
-        Keeping the direct oracle on the public GraphQL representation prevents
-        schema-validation failures from becoming missing gold answers.
-        """
         endpoint = "https://api.platform.opentargets.org/api/v4/graphql"
         target_id = await self._ot_search_id(gene, "target")
         if not target_id:
@@ -166,7 +158,10 @@ class LiveOracle(_BaseLiveOracle):
                 id
                 drug { id name }
                 maxClinicalStage
-                diseases { diseaseId diseaseFromSource }
+                diseases {
+                  diseaseFromSource
+                  disease { id name }
+                }
               }
             }
           }
@@ -291,8 +286,6 @@ class LiveOracle(_BaseLiveOracle):
                     attempts=1,
                 )
             except Exception:
-                # Mechanism records are still valid even if optional preferred
-                # molecule-name enrichment is temporarily unavailable.
                 return molecule_id, {}
 
         molecules = dict(await asyncio.gather(*(fetch(mid) for mid in molecule_ids))) if molecule_ids else {}
