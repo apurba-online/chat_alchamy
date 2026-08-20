@@ -11,10 +11,10 @@ import httpx
 
 API_BASE = "https://api.openai.com/v1"
 DEFAULT_CANDIDATES = [
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-4o-2024-11-20",
-    "o3-mini-2025-01-31",
-    "o1-2024-12-17",
-    "gpt-4o-mini-2024-07-18",
 ]
 
 
