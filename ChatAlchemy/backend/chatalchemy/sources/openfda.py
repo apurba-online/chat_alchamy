@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+import httpx
+
 from ..models import EvidenceItem
 from .base import LiveSource
 
@@ -9,6 +11,28 @@ from .base import LiveSource
 class OpenFDASource(LiveSource):
     name = "Drugs@FDA/openFDA"
     base_url = "https://api.fda.gov/drug/drugsfda.json"
+
+    @staticmethod
+    def _is_no_match(exc: Exception) -> bool:
+        """Return True only for openFDA's documented zero-match response shape.
+
+        openFDA represents an empty search as HTTP 404 with
+        `error.code=NOT_FOUND` and `error.message=No matches found!`. That is a
+        valid empty evidence set, not an upstream outage. Other 404s remain
+        failures so broken URLs/schema changes cannot masquerade as absence.
+        """
+        if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code != 404:
+            return False
+        try:
+            payload = exc.response.json()
+        except Exception:
+            return False
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if not isinstance(error, dict):
+            return False
+        code = str(error.get("code") or "").upper()
+        message = str(error.get("message") or "").lower()
+        return code == "NOT_FOUND" and "no matches found" in message
 
     async def approval_records(self, drug: str, max_results: int = 20) -> list[EvidenceItem]:
         if not drug:
@@ -25,8 +49,8 @@ class OpenFDASource(LiveSource):
             params["api_key"] = key
 
         data: dict | None = None
-        successful_requests = 0
-        last_error: Exception | None = None
+        valid_empty_requests = 0
+        hard_errors: list[Exception] = []
         for search in terms:
             try:
                 candidate = await self._get(
@@ -34,20 +58,25 @@ class OpenFDASource(LiveSource):
                     params={**params, "search": search},
                     attempts=1,
                 )
-                successful_requests += 1
                 if candidate.get("results"):
                     data = candidate
                     break
-                if data is None:
-                    # Preserve a genuine successful empty response so we can
-                    # distinguish it from the case where every request failed.
-                    data = candidate
+                # A 2xx response with no rows is also a valid empty search.
+                valid_empty_requests += 1
             except Exception as exc:
-                last_error = exc
+                if self._is_no_match(exc):
+                    valid_empty_requests += 1
+                    continue
+                hard_errors.append(exc)
 
-        if successful_requests == 0 and last_error is not None:
-            raise last_error
-        if not data or not data.get("results"):
+        if data is None:
+            # Do not call the result a verified absence if any fallback search
+            # suffered a real API/network/schema failure. A matching record may
+            # have existed only in the failed search field.
+            if hard_errors:
+                raise hard_errors[-1]
+            if valid_empty_requests:
+                return []
             return []
 
         out: list[EvidenceItem] = []
