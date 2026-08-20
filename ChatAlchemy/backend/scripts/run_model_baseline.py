@@ -14,10 +14,11 @@ from chatalchemy.benchmark import EvaluationOracle, generate_cases, score_value,
 from chatalchemy.evaluation import UnrestrictedToolAgent
 from chatalchemy.llm import LLMClient
 from chatalchemy.reasoning import ChatAlchemyEngine
+from chatalchemy.sources.base import _safe_error
 from scripts.run_live_benchmark import prediction as chatalchemy_prediction
 from scripts.run_live_benchmark import user_evidence
 
-PROMPT_VERSION = "model-baseline-v4"
+PROMPT_VERSION = "model-baseline-v5"
 PUBLIC_BENCHMARK_N = 1500
 
 
@@ -101,6 +102,14 @@ def _add_usage(total: dict[str, int], usage: dict[str, int]) -> None:
         total[key] = total.get(key, 0) + int(usage.get(key, 0))
 
 
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * q))))
+    return ordered[index]
+
+
 def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     baseline = [float(row["task_score"]) for row in rows if row.get("task_score") is not None]
     full = [float(row["chatalchemy_task_score"]) for row in rows if row.get("chatalchemy_task_score") is not None]
@@ -109,6 +118,11 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for row in rows
         if row.get("chatalchemy_task_score") is not None and row.get("task_score") is not None
     ]
+    baseline_latency = [float(row["baseline_latency_ms"]) for row in rows]
+    model_latency = [float(row["baseline_model_latency_ms"]) for row in rows]
+    retrieval_latency = [float(row["baseline_retrieval_latency_ms"]) for row in rows]
+    chatalchemy_latency = [float(row["chatalchemy_latency_ms"]) for row in rows]
+    oracle_latency = [float(row["oracle_latency_ms"]) for row in rows]
     return {
         "n": len(rows),
         "oracle_coverage": statistics.mean(bool(row["oracle_available"]) for row in rows) if rows else 0.0,
@@ -116,7 +130,17 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "chatalchemy_mean_task_score": statistics.mean(full) if full else None,
         "paired_n": len(paired),
         "paired_mean_chatalchemy_minus_baseline": statistics.mean(a - b for a, b in paired) if paired else None,
-        "median_baseline_latency_ms": statistics.median(float(row["baseline_latency_ms"]) for row in rows) if rows else 0.0,
+        # Comparable efficiency metric: baseline retrieval/tool-selection plus
+        # final model generation, explicitly excluding oracle/reference scoring.
+        "median_baseline_latency_ms": statistics.median(baseline_latency) if baseline_latency else 0.0,
+        "p95_baseline_latency_ms": _percentile(baseline_latency, 0.95),
+        "median_baseline_model_latency_ms": statistics.median(model_latency) if model_latency else 0.0,
+        "p95_baseline_model_latency_ms": _percentile(model_latency, 0.95),
+        "median_baseline_retrieval_latency_ms": statistics.median(retrieval_latency) if retrieval_latency else 0.0,
+        "p95_baseline_retrieval_latency_ms": _percentile(retrieval_latency, 0.95),
+        "median_chatalchemy_latency_ms": statistics.median(chatalchemy_latency) if chatalchemy_latency else 0.0,
+        "p95_chatalchemy_latency_ms": _percentile(chatalchemy_latency, 0.95),
+        "median_oracle_latency_ms": statistics.median(oracle_latency) if oracle_latency else 0.0,
         "model_error_rate": statistics.mean(bool(row.get("model_error")) for row in rows) if rows else 0.0,
         "retrieval_error_rate": statistics.mean(bool(row.get("retrieval_error")) for row in rows) if rows else 0.0,
         "mean_model_input_tokens": statistics.mean(int(row["model_usage"].get("input_tokens", 0)) for row in rows) if rows else 0.0,
@@ -175,9 +199,16 @@ async def main() -> None:
     started = datetime.now(timezone.utc)
     try:
         for case in cases:
-            case_started = time.perf_counter()
-            gold, oracle_error = await oracle.get(case)
+            audit_started = time.perf_counter()
 
+            oracle_started = time.perf_counter()
+            gold, oracle_error = await oracle.get(case)
+            oracle_latency_ms = (time.perf_counter() - oracle_started) * 1000
+
+            # ChatAlchemy-full is evaluated on every case to keep the paired
+            # comparison in the same artifact. Its latency is measured on its
+            # own and is never folded into LLM-only or unrestricted-agent time.
+            full_started = time.perf_counter()
             retrieval_error = None
             full_response = None
             try:
@@ -187,7 +218,13 @@ async def main() -> None:
                     user_evidence=user_evidence(case),
                 )
             except Exception as exc:
-                retrieval_error = f"{type(exc).__name__}: {exc}"
+                retrieval_error = _safe_error(exc)
+            chatalchemy_latency_ms = (time.perf_counter() - full_started) * 1000
+            chatalchemy_source_latency_ms = (
+                sum(float(trace.latency_ms) for trace in full_response.traces)
+                if full_response is not None
+                else 0.0
+            )
 
             full_pred = chatalchemy_prediction(case, full_response) if full_response is not None else None
             full_score = score_value(gold.kind, full_pred, gold.value) if gold is not None and full_pred is not None else None
@@ -195,10 +232,20 @@ async def main() -> None:
             evidence = None
             tool_trace: list[dict[str, Any]] = []
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            baseline_retrieval_latency_ms = 0.0
+
             if args.mode == "same_retrieval_llm":
+                # This baseline consumes the exact evidence state produced by the
+                # ChatAlchemy evidence pipeline. The measured evidence-preparation
+                # time is therefore the ChatAlchemy pipeline wall-clock time; the
+                # final LLM composition time is added below. This is conservative
+                # because it also contains ChatAlchemy's small deterministic final
+                # operation, and that definition is recorded in the artifact.
                 evidence = _evidence_payload(full_response) if full_response is not None else []
+                baseline_retrieval_latency_ms = chatalchemy_latency_ms
             elif args.mode == "unrestricted_tool_agent":
                 assert tool_agent is not None
+                retrieval_started = time.perf_counter()
                 try:
                     retrieval = await tool_agent.retrieve(
                         case.question,
@@ -208,8 +255,9 @@ async def main() -> None:
                     tool_trace = retrieval["trace"]
                     _add_usage(usage, retrieval["usage"])
                 except Exception as exc:
-                    retrieval_error = f"{type(exc).__name__}: {exc}"
+                    retrieval_error = _safe_error(exc)
                     evidence = []
+                baseline_retrieval_latency_ms = (time.perf_counter() - retrieval_started) * 1000
 
             instructions = (
                 "You are being evaluated on biomedical evidence reasoning. "
@@ -237,8 +285,9 @@ async def main() -> None:
                 )
                 _add_usage(usage, llm.last_usage)
             except Exception as exc:
-                model_error = f"{type(exc).__name__}: {exc}"
-            baseline_latency = (time.perf_counter() - model_started) * 1000
+                model_error = _safe_error(exc)
+            baseline_model_latency_ms = (time.perf_counter() - model_started) * 1000
+            baseline_latency_ms = baseline_retrieval_latency_ms + baseline_model_latency_ms
 
             pred = _prediction(case, raw_output) if not model_error else None
             score = score_value(gold.kind, pred, gold.value) if gold is not None and pred is not None else None
@@ -261,11 +310,23 @@ async def main() -> None:
                     "model_error": model_error,
                     "retrieval_error": retrieval_error,
                     "evidence_count": len(evidence or []),
-                    "tool_call_count": sum(not step.get("decision", {}).get("done", False) and step.get("decision", {}).get("tool") != "none" for step in tool_trace),
+                    "tool_call_count": sum(
+                        not step.get("decision", {}).get("done", False)
+                        and step.get("decision", {}).get("tool") != "none"
+                        for step in tool_trace
+                    ),
                     "tool_trace": tool_trace,
                     "model_usage": usage,
-                    "baseline_latency_ms": baseline_latency,
-                    "total_case_latency_ms": (time.perf_counter() - case_started) * 1000,
+                    "oracle_latency_ms": oracle_latency_ms,
+                    "chatalchemy_latency_ms": chatalchemy_latency_ms,
+                    "chatalchemy_source_latency_ms": chatalchemy_source_latency_ms,
+                    "baseline_retrieval_latency_ms": baseline_retrieval_latency_ms,
+                    "baseline_model_latency_ms": baseline_model_latency_ms,
+                    # Efficiency metric for the baseline itself, excluding the
+                    # direct-source oracle and paired-reference evaluation.
+                    "baseline_latency_ms": baseline_latency_ms,
+                    # Audit-only duration includes oracle + reference + baseline.
+                    "audit_case_latency_ms": (time.perf_counter() - audit_started) * 1000,
                 }
             )
     finally:
@@ -281,7 +342,7 @@ async def main() -> None:
         for family in sorted({row["family"] for row in rows})
     }
     result = {
-        "schema": "ChatAlchemyModelBaselineRun/v4",
+        "schema": "ChatAlchemyModelBaselineRun/v5",
         "run": {
             "mode": args.mode,
             "model": args.model,
@@ -297,6 +358,14 @@ async def main() -> None:
             "started_at_utc": started.isoformat(),
             "finished_at_utc": finished.isoformat(),
             "git_sha": os.getenv("GITHUB_SHA"),
+            "latency_definition": (
+                "baseline_latency_ms = baseline retrieval/tool-selection + final model generation; "
+                "direct-source oracle and paired ChatAlchemy reference evaluation are excluded"
+            ),
+            "same_retrieval_latency_note": (
+                "same-retrieval evidence-preparation time uses the ChatAlchemy evidence pipeline wall-clock, "
+                "including its small deterministic final-operation overhead"
+            ),
             **oracle.metadata(),
         },
         "benchmark": {**manifest, "seed": args.seed},
