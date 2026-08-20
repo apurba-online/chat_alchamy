@@ -141,6 +141,59 @@ class LiveOracle(_BaseLiveOracle):
         best = max(hits, key=rank)
         return str(best["id"])
 
+    async def _gene(self, gene: str, limit: int = 20):
+        """Current direct Open Targets target query used by the frozen oracle.
+
+        Current GraphQL replaces the backing-model `drugId` field with
+        `drug { id name }` and excludes `targetId` from ClinicalTargetFromTarget.
+        Keeping the direct oracle on the public GraphQL representation prevents
+        schema-validation failures from becoming missing gold answers.
+        """
+        endpoint = "https://api.platform.opentargets.org/api/v4/graphql"
+        target_id = await self._ot_search_id(gene, "target")
+        if not target_id:
+            return [], []
+        query = '''
+        query Target($id: String!) {
+          target(ensemblId: $id) {
+            id
+            approvedSymbol
+            associatedDiseases(page: {index: 0, size: 20}) {
+              rows { disease { id name } score }
+            }
+            drugAndClinicalCandidates {
+              rows {
+                id
+                drug { id name }
+                maxClinicalStage
+                diseases { diseaseId diseaseFromSource }
+              }
+            }
+          }
+        }
+        '''
+        obj = (
+            (await self._post(endpoint, query, {"id": target_id})).get("data") or {}
+        ).get("target") or {}
+        values: list[str] = []
+        records = [self._record("Open Targets", target_id)]
+
+        for row in ((obj.get("associatedDiseases") or {}).get("rows") or [])[:limit]:
+            disease = row.get("disease") or {}
+            if disease.get("name"):
+                values.append(f"gene_disease_association:{str(disease['name']).lower()}")
+            if disease.get("id"):
+                records.append(self._record("Open Targets", disease.get("id")))
+
+        for row in ((obj.get("drugAndClinicalCandidates") or {}).get("rows") or [])[:limit]:
+            drug = row.get("drug") or {}
+            drug_id = drug.get("id")
+            if not drug_id:
+                continue
+            values.append(f"known_drug:{str(drug.get('name') or drug_id).lower()}")
+            records.append(self._record("Open Targets", drug_id))
+        return sorted(set(values)), records
+
     async def _approvals(self, drug: str, limit: int = 20):
         endpoint = "https://api.fda.gov/drug/drugsfda.json"
         payload = None
