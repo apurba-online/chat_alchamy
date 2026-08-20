@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import os
+import re
+import time
+import uuid
 from contextlib import asynccontextmanager
 from io import BytesIO
 
 import httpx
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .biomedical import BiomedicalService
 from .files import export_xlsx_bytes, extract_document_text, parse_tabular_bytes
@@ -24,8 +30,26 @@ from .models import (
 )
 from .reasoning import ChatAlchemyEngine
 
-MAX_DATA_UPLOAD_BYTES = 15 * 1024 * 1024
-MAX_DOCUMENT_UPLOAD_BYTES = 25 * 1024 * 1024
+# Vercel Functions enforce a 4.5 MB request/response payload ceiling. Keep
+# direct multipart uploads below that platform boundary so ChatAlchemy can
+# return its own predictable validation response. Larger-file support should
+# use direct-to-object-storage uploads rather than routing bytes through the
+# Python Function.
+MAX_DIRECT_UPLOAD_BYTES = 4 * 1024 * 1024
+MAX_DATA_UPLOAD_BYTES = MAX_DIRECT_UPLOAD_BYTES
+MAX_DOCUMENT_UPLOAD_BYTES = MAX_DIRECT_UPLOAD_BYTES
+MAX_API_CONCURRENCY = max(1, min(64, int(os.getenv("CHATALCHEMY_MAX_CONCURRENCY", "10"))))
+OVERLOAD_ACQUIRE_TIMEOUT_SECONDS = max(
+    0.05,
+    min(5.0, float(os.getenv("CHATALCHEMY_OVERLOAD_WAIT_SECONDS", "1.0"))),
+)
+REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
+
+logger = logging.getLogger("chatalchemy.api")
+if not logger.handlers:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
+api_capacity = asyncio.Semaphore(MAX_API_CONCURRENCY)
+
 LIVE_SOURCE_LABELS = [
     "RxNorm/RxNav",
     "DailyMed",
@@ -39,6 +63,13 @@ LIVE_SOURCE_LABELS = [
 engine: ChatAlchemyEngine | None = None
 biomedical: BiomedicalService | None = None
 llm: LLMClient | None = None
+
+
+def _request_id(request: Request) -> str:
+    candidate = (request.headers.get("x-request-id") or "").strip()
+    if REQUEST_ID_RE.fullmatch(candidate):
+        return candidate
+    return uuid.uuid4().hex
 
 
 def _translate_upstream_error(exc: httpx.HTTPError) -> None:
@@ -90,7 +121,57 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID", "Retry-After"],
 )
+
+
+@app.middleware("http")
+async def operational_guard(request: Request, call_next):
+    """Add request correlation and per-instance overload protection.
+
+    This protects one serverless instance from excessive concurrent expensive
+    source/model calls. It is intentionally not described as a global user/IP
+    rate limiter; global abuse controls belong at Vercel Firewall/WAF or another
+    shared edge/store layer.
+    """
+    request_id = _request_id(request)
+    started = time.perf_counter()
+    acquired = False
+    status_code = 500
+    try:
+        if request.url.path.startswith("/api/") and request.url.path != "/api/health":
+            try:
+                await asyncio.wait_for(api_capacity.acquire(), timeout=OVERLOAD_ACQUIRE_TIMEOUT_SECONDS)
+                acquired = True
+            except TimeoutError:
+                status_code = 503
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "ChatAlchemy is temporarily at capacity. Please retry shortly."},
+                    headers={"Retry-After": "1", "X-Request-ID": request_id},
+                )
+
+        response = await call_next(request)
+        status_code = response.status_code
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        if acquired:
+            api_capacity.release()
+        logger.info(
+            json.dumps(
+                {
+                    "event": "http_request",
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": status_code,
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "deployment_commit": os.getenv("VERCEL_GIT_COMMIT_SHA"),
+                },
+                sort_keys=True,
+            )
+        )
 
 
 @app.get("/api/health")
@@ -107,6 +188,8 @@ async def health():
         "model": llm.model if llm and llm.available else None,
         "research_use_only": True,
         "live_sources": LIVE_SOURCE_LABELS,
+        "direct_upload_limit_bytes": MAX_DIRECT_UPLOAD_BYTES,
+        "instance_concurrency_limit": MAX_API_CONCURRENCY,
         "capabilities": [
             "live biomedical evidence retrieval",
             "deterministic cross-source joins",
@@ -175,7 +258,7 @@ async def biomedical_upload(file: UploadFile = File(...)):
     filename = file.filename or "document"
     content = await file.read(MAX_DOCUMENT_UPLOAD_BYTES + 1)
     if len(content) > MAX_DOCUMENT_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Document exceeds the 25 MB upload limit")
+        raise HTTPException(status_code=413, detail="Document exceeds the 4 MB direct upload limit")
     try:
         text = extract_document_text(filename, content)
     except ValueError as exc:
@@ -194,7 +277,10 @@ async def biomedical_upload(file: UploadFile = File(...)):
 async def biomedical_analyze(req: BiomedicalAnalyzeRequest):
     if biomedical is None:
         raise RuntimeError("Biomedical service not initialized")
-    return await biomedical.analyze(req.genes, req.query, req.paper_summary)
+    try:
+        return await biomedical.analyze(req.genes, req.query, req.paper_summary)
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _translate_upstream_error(exc)
 
 
 @app.post("/api/data/parse")
@@ -202,7 +288,7 @@ async def data_parse(file: UploadFile = File(...)):
     filename = file.filename or "data"
     content = await file.read(MAX_DATA_UPLOAD_BYTES + 1)
     if len(content) > MAX_DATA_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Data file exceeds the 15 MB upload limit")
+        raise HTTPException(status_code=413, detail="Data file exceeds the 4 MB direct upload limit")
     try:
         rows = parse_tabular_bytes(filename, content)
     except ValueError as exc:
