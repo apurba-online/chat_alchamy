@@ -51,8 +51,8 @@ class FakeOpenTargets(OpenTargetsSource):
                                     "maxClinicalStage": "Phase IV",
                                     "diseases": [
                                         {
-                                            "diseaseId": "EFO_0003060",
                                             "diseaseFromSource": "non-small cell lung cancer",
+                                            "disease": {"id": "EFO_0003060", "name": "non-small cell lung carcinoma"},
                                         }
                                     ],
                                 }
@@ -98,7 +98,12 @@ class FakeDirectOracle(LiveOracle):
                                 "id": "candidate-hash",
                                 "drug": {"id": "CHEMBL3353410", "name": "OSIMERTINIB"},
                                 "maxClinicalStage": "Phase IV",
-                                "diseases": [],
+                                "diseases": [
+                                    {
+                                        "diseaseFromSource": "non-small cell lung cancer",
+                                        "disease": {"id": "EFO_0003060", "name": "non-small cell lung carcinoma"},
+                                    }
+                                ],
                             }
                         ]
                     },
@@ -115,20 +120,23 @@ def _candidate_query(queries):
 
 
 @pytest.mark.asyncio
-async def test_product_gene_query_uses_current_graphql_drug_object():
+async def test_product_gene_query_uses_current_resolved_graphql_objects():
     source = FakeOpenTargets()
     rows = await source.gene_details("EGFR", max_results=10)
 
-    query = _candidate_query(source.queries)
-    assert "drug { id name }" in " ".join(query.split())
+    query = " ".join(_candidate_query(source.queries).split())
+    assert "drug { id name }" in query
+    assert "disease { id name }" in query
     assert "drugId" not in query
     assert "targetId" not in query
+    assert "diseaseId" not in query
 
     assert any(row.predicate == "gene_disease_association" for row in rows)
     drug = next(row for row in rows if row.predicate == "known_drug")
     assert drug.value == "OSIMERTINIB"
     assert drug.source_record_id == "CHEMBL3353410"
     assert drug.qualifiers["chembl_id"] == "CHEMBL3353410"
+    assert drug.qualifiers["disease_ids"] == ["EFO_0003060"]
 
 
 @pytest.mark.asyncio
@@ -136,10 +144,12 @@ async def test_direct_oracle_gene_query_uses_same_public_schema_independently():
     oracle = FakeDirectOracle()
     values, records = await oracle._gene("EGFR", limit=10)
 
-    query = _candidate_query(oracle.queries)
-    assert "drug { id name }" in " ".join(query.split())
+    query = " ".join(_candidate_query(oracle.queries).split())
+    assert "drug { id name }" in query
+    assert "disease { id name }" in query
     assert "drugId" not in query
     assert "targetId" not in query
+    assert "diseaseId" not in query
     assert "gene_disease_association:non-small cell lung carcinoma" in values
     assert "known_drug:osimertinib" in values
     assert any(record["record"] == "CHEMBL3353410" for record in records)
