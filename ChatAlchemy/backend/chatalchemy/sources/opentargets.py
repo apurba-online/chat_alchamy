@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 from ..models import EvidenceItem
 from .base import LiveSource
@@ -10,20 +11,51 @@ class OpenTargetsSource(LiveSource):
     name = "Open Targets"
     endpoint = "https://api.platform.opentargets.org/api/v4/graphql"
 
-    async def _search_id(self, query_text: str, entity: str) -> str | None:
+    @staticmethod
+    def _normalise_name(text: str) -> str:
+        return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+    async def _search_hit(self, query_text: str, entity: str) -> dict | None:
         query = '''
         query Search($q: String!, $entities: [String!]) {
-          search(queryString: $q, entityNames: $entities, page: {index: 0, size: 5}) {
+          search(queryString: $q, entityNames: $entities, page: {index: 0, size: 10}) {
             hits { id entity name description }
           }
         }
         '''
-        payload = await self._post_json(
-            self.endpoint,
-            {"query": query, "variables": {"q": query_text, "entities": [entity]}},
-        )
-        hits = (((payload.get("data") or {}).get("search") or {}).get("hits") or [])
-        return str(hits[0].get("id")) if hits and hits[0].get("id") else None
+        variants = list(dict.fromkeys([query_text, re.sub(r"[-–—]+", " ", query_text)]))
+        hits: list[dict] = []
+        for variant in variants:
+            payload = await self._post_json(
+                self.endpoint,
+                {"query": query, "variables": {"q": variant, "entities": [entity]}},
+            )
+            hits.extend((((payload.get("data") or {}).get("search") or {}).get("hits") or []))
+
+        unique: dict[str, dict] = {}
+        for hit in hits:
+            hit_id = str(hit.get("id") or "")
+            if hit_id and hit_id not in unique:
+                unique[hit_id] = hit
+        if not unique:
+            return None
+
+        wanted = self._normalise_name(query_text)
+        wanted_tokens = set(wanted.split())
+
+        def score(hit: dict) -> tuple[float, int]:
+            name = self._normalise_name(str(hit.get("name") or ""))
+            name_tokens = set(name.split())
+            overlap = len(wanted_tokens & name_tokens) / max(1, len(wanted_tokens | name_tokens))
+            exact = 1.0 if name == wanted else 0.0
+            containment = 1.0 if wanted and (wanted in name or name in wanted) else 0.0
+            return (exact * 100 + containment * 20 + overlap * 10, -len(name))
+
+        return max(unique.values(), key=score)
+
+    async def _search_id(self, query_text: str, entity: str) -> str | None:
+        hit = await self._search_hit(query_text, entity)
+        return str(hit.get("id")) if hit and hit.get("id") else None
 
     async def _drug_name(self, chembl_id: str) -> str:
         query = '''query Drug($id: String!) { drug(chemblId: $id) { id name } }'''
@@ -133,15 +165,18 @@ class OpenTargetsSource(LiveSource):
         return drug_id, await self._drug_name(drug_id)
 
     async def disease_genes(self, disease: str, max_results: int = 20) -> list[EvidenceItem]:
-        disease_id = await self._search_id(disease, "disease")
+        hit = await self._search_hit(disease, "disease")
+        disease_id = str(hit.get("id")) if hit and hit.get("id") else None
         if not disease_id:
             return []
+
         query = '''
         query Disease($id: String!) {
           disease(efoId: $id) {
             id
             name
-            associatedTargets(page: {index: 0, size: 50}) {
+            associatedTargets(enableIndirect: true, page: {index: 0, size: 50}) {
+              count
               rows { target { id approvedSymbol approvedName } score }
             }
           }
@@ -149,14 +184,34 @@ class OpenTargetsSource(LiveSource):
         '''
         payload = await self._post_json(self.endpoint, {"query": query, "variables": {"id": disease_id}})
         obj = (payload.get("data") or {}).get("disease") or {}
-        out: list[EvidenceItem] = []
-        for row in ((obj.get("associatedTargets") or {}).get("rows") or [])[:max_results]:
+        if not obj:
+            return []
+
+        canonical_name = str(obj.get("name") or hit.get("name") or disease)
+        associated = obj.get("associatedTargets") or {}
+        out: list[EvidenceItem] = [
+            EvidenceItem.build(
+                subject=disease,
+                predicate="disease_identity",
+                value=canonical_name,
+                qualifiers={
+                    "efo_id": disease_id,
+                    "requested_name": disease,
+                    "include_indirect": True,
+                    "association_count": associated.get("count"),
+                },
+                source=self.name,
+                source_record_id=disease_id,
+                source_url=f"https://platform.opentargets.org/disease/{disease_id}/associations",
+            )
+        ]
+        for row in (associated.get("rows") or [])[:max_results]:
             target = row.get("target") or {}
             if not target.get("approvedSymbol"):
                 continue
             out.append(
                 EvidenceItem.build(
-                    subject=obj.get("name") or disease,
+                    subject=canonical_name,
                     predicate="disease_gene_association",
                     value=target.get("approvedSymbol"),
                     qualifiers={
@@ -164,10 +219,11 @@ class OpenTargetsSource(LiveSource):
                         "gene_name": target.get("approvedName"),
                         "efo_id": disease_id,
                         "score": row.get("score"),
+                        "include_indirect": True,
                     },
                     source=self.name,
                     source_record_id=target.get("id"),
-                    source_url=f"https://platform.opentargets.org/disease/{disease_id}",
+                    source_url=f"https://platform.opentargets.org/disease/{disease_id}/associations",
                 )
             )
         return out
