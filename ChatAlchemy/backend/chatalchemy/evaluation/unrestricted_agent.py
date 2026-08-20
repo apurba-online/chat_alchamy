@@ -5,6 +5,7 @@ from typing import Any
 
 from ..llm import LLMClient
 from ..models import EvidenceItem
+from ..sources.base import _safe_error
 
 TOOL_NAMES = (
     "rxnorm",
@@ -23,8 +24,8 @@ class UnrestrictedToolAgent:
     """Evaluation baseline: an LLM chooses calls to the same live source adapters.
 
     This baseline intentionally does not use ChatAlchemy's typed planner,
-    normalization logic, deterministic final joins, conflict analysis, or claim
-    verifier. It is not used by the production application.
+    normalization logic, deterministic final joins, evidence-relation analysis,
+    or evidence-link validator. It is not used by the production application.
 
     The default 40-step ceiling is deliberately generous enough to cover the
     order of source calls used by ChatAlchemy's hardest multi-candidate
@@ -138,5 +139,13 @@ class UnrestrictedToolAgent:
                 evidence.extend(items)
                 trace.append({"step": step, "decision": decision, "ok": True, "result_count": len(items)})
             except Exception as exc:
-                trace.append({"step": step, "decision": decision, "ok": False, "result_count": 0, "error": f"{type(exc).__name__}: {exc}"})
+                trace.append(
+                    {
+                        "step": step,
+                        "decision": decision,
+                        "ok": False,
+                        "result_count": 0,
+                        "error": _safe_error(exc),
+                    }
+                )
         return {"evidence": evidence, "trace": trace, "usage": usage}
