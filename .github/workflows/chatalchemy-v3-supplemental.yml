@@ -1,0 +1,206 @@
+name: ChatAlchemy V3 Supplemental Evaluation
+
+on:
+  pull_request:
+    branches:
+      - paper-v3-freeze-2026-08-20
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  METHOD_SHA: 'f13c3aa8e887b2ddece4badcd29987104ea39c64'
+  CONFIRMATORY_RUN_ID: '32394142757'
+  BENCHMARK_SEED: '1729'
+
+jobs:
+  entity-normalization:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Verify immutable method checkout
+        run: test "$(git rev-parse HEAD)" = "$METHOD_SHA"
+      - name: Evaluate live RxNorm entity normalization
+        run: PYTHONPATH=. python scripts/evaluate_entity_normalization.py --split all --out benchmark/entity-normalization.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v3-supplemental-entity-normalization
+          path: ChatAlchemy/backend/benchmark/entity-normalization.json
+          retention-days: 90
+
+  counterfactual:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: gpt-5.6-sol
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Verify immutable method checkout
+        run: test "$(git rev-parse HEAD)" = "$METHOD_SHA"
+      - name: Require server-side model credential
+        run: test -n "$OPENAI_API_KEY"
+      - name: Run frozen 120-case counterfactual grounding evaluation
+        run: PYTHONPATH=. python scripts/run_counterfactual.py --n 120 --seed $BENCHMARK_SEED --out benchmark/counterfactual.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v3-supplemental-counterfactual
+          path: ChatAlchemy/backend/benchmark/counterfactual.json
+          if-no-files-found: error
+          retention-days: 90
+
+  failure-injection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        source: [rxnorm, dailymed, openfda, clinicaltrials, chembl, opentargets, pubchem]
+        mode: [exception, empty]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Verify immutable method checkout
+        run: test "$(git rev-parse HEAD)" = "$METHOD_SHA"
+      - uses: actions/download-artifact@v4
+        with:
+          name: v3-test-oracle-snapshot
+          path: ChatAlchemy/backend/benchmark
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: apurba-online/chat_alchamy
+          run-id: 32394142757
+      - name: Run controlled source failure injection
+        run: >-
+          PYTHONPATH=. python scripts/run_failure_injection.py
+          --source '${{ matrix.source }}'
+          --mode '${{ matrix.mode }}'
+          --seed $BENCHMARK_SEED
+          --split test
+          --difficulty all
+          --limit 150
+          --oracle-snapshot benchmark/oracle-snapshot.json
+          --out benchmark/failure-${{ matrix.source }}-${{ matrix.mode }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: v3-supplemental-failure-${{ matrix.source }}-${{ matrix.mode }}
+          path: ChatAlchemy/backend/benchmark/failure-${{ matrix.source }}-${{ matrix.mode }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+  expert-packet:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify immutable method checkout
+        run: test "$(git rev-parse HEAD)" = "$METHOD_SHA"
+      - uses: actions/download-artifact@v4
+        with:
+          name: v3-test-main-merged
+          path: ChatAlchemy/backend/benchmark/expert/main
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: apurba-online/chat_alchamy
+          run-id: 32394142757
+      - uses: actions/download-artifact@v4
+        with:
+          name: v3-test-baseline-llm_only-merged
+          path: ChatAlchemy/backend/benchmark/expert/llm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: apurba-online/chat_alchamy
+          run-id: 32394142757
+      - uses: actions/download-artifact@v4
+        with:
+          name: v3-test-baseline-same_retrieval_llm-merged
+          path: ChatAlchemy/backend/benchmark/expert/retrieval
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: apurba-online/chat_alchamy
+          run-id: 32394142757
+      - uses: actions/download-artifact@v4
+        with:
+          name: v3-test-baseline-unrestricted_tool_agent-merged
+          path: ChatAlchemy/backend/benchmark/expert/agent
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: apurba-online/chat_alchamy
+          run-id: 32394142757
+      - name: Locate result files and prepare blinded expert packet
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN=$(find benchmark/expert/main -type f -name '*.json' | head -1)
+          LLM=$(find benchmark/expert/llm -type f -name '*.json' | head -1)
+          RET=$(find benchmark/expert/retrieval -type f -name '*.json' | head -1)
+          AGENT=$(find benchmark/expert/agent -type f -name '*.json' | head -1)
+          PYTHONPATH=. python scripts/prepare_expert_evaluation.py \
+            --system "ChatAlchemy=$MAIN" \
+            --system "LLM-only=$LLM" \
+            --system "Same-retrieval-LLM=$RET" \
+            --system "Unrestricted-agent=$AGENT" \
+            --cases 50 --seed $BENCHMARK_SEED \
+            --packet benchmark/expert_eval_packet.csv \
+            --key benchmark/expert_eval_blinding_key.json
+      - name: Write external holdout author instructions and schema example
+        shell: bash
+        run: |
+          cat > benchmark/EXTERNAL_HOLDOUT_INSTRUCTIONS.md <<'EOF'
+          # External holdout instructions
+
+          This study is intentionally pending an independent external author. Do not let ChatAlchemy developers author the questions or answers.
+
+          The external author should create a private JSON list of biomedical research questions that conform to the frozen external-holdout loader schema. The file must remain private from system developers until the system and evaluation protocol are locked. Do not include prompts copied from the public benchmark. Prefer naturally written questions covering the supported evidence sources and include the reference answer fields required by the schema.
+
+          Before evaluation, validate and fingerprint the independently authored file with `scripts/freeze_external_holdout.py`. Record the resulting SHA-256 and canonical fingerprint. Evaluate the immutable Freeze v3 exactly once with `scripts/run_external_holdout.py`, then retain the source file, freeze manifest, raw outputs, and analysis outputs as the audit trail.
+
+          Human expert scores must likewise come from real independent raters. The provided blinded packet contains no fabricated ratings; all rating columns are intentionally blank. Keep the blinding key hidden until ratings are locked.
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: v3-supplemental-human-study-materials
+          path: |
+            ChatAlchemy/backend/benchmark/expert_eval_packet.csv
+            ChatAlchemy/backend/benchmark/expert_eval_blinding_key.json
+            ChatAlchemy/backend/benchmark/EXTERNAL_HOLDOUT_INSTRUCTIONS.md
+          retention-days: 90
