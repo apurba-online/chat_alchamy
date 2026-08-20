@@ -1,44 +1,358 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Dna, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus } from 'lucide-react';
-import type { Chat, Message, QueryResponse } from './types';
+import type { Chat, Message, QueryResponse, SystemHealth } from './types';
 import { ChatHeader } from './components/ChatHeader';
 import { ChatInput } from './components/ChatInput';
 import { ChatMessage } from './components/ChatMessage';
+import { ResearchHome } from './components/ResearchHome';
 import { BiomedicalModule } from './components/biomedical/BiomedicalModule';
-import { chat as chatApi, queryLive } from './lib/api';
-import { clearData, getCandidateDrugEvidence, getLoadedFiles, loadBackendData, searchKnowledgeBase } from './lib/knowledge';
-import { createNewChat, deleteChat, generateChatName, getAllChats, getChatById, saveChat } from './lib/storage';
+import { getSystemHealth, queryLive } from './lib/api';
+import {
+  clearData,
+  getCandidateDrugEvidence,
+  getLoadedFiles,
+  loadBackendData,
+  searchKnowledgeBase,
+} from './lib/knowledge';
+import {
+  createNewChat,
+  deleteChat,
+  generateChatName,
+  getAllChats,
+  getChatById,
+  saveChat,
+} from './lib/storage';
 
-const LIVE_TERMS = /\b(fda|dailymed|clinical\s*trials?|trial|rxnorm|rxcui|chembl|pubchem|open\s*targets?|targeting|approved|approval|smiles|iupac)\b/i;
+type ActiveView = 'home' | 'chat' | 'documents';
+
 const newId = () => crypto.randomUUID();
+
 function responseMessage(data: QueryResponse): Message {
   const seen = new Set<string>();
-  return { id: newId(), role: 'assistant', content: data.answer, timestamp: new Date(), supportRate: data.supported_claim_rate, warnings: data.warnings, tableData: data.table || undefined, chartData: data.chart || undefined, provenance: (data.evidence || []).filter(e => { const k = `${e.source}:${e.source_record_id || e.id}`; if (seen.has(k)) return false; seen.add(k); return true; }).map(e => ({ id: e.id, source: e.source, recordId: e.source_record_id, url: e.source_url })) };
-}
-export default function App() {
-  const [currentChat, setCurrentChat] = useState<Chat | null>(null); const [isLoading, setLoading] = useState(false); const [loadedFiles, setLoadedFiles] = useState<string[]>([]); const [error, setError] = useState<string | null>(null); const [showBiomedical, setShowBiomedical] = useState(false); const [showChat, setShowChat] = useState(false); const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark' || (!localStorage.getItem('theme') && matchMedia('(prefers-color-scheme: dark)').matches));
-  useEffect(() => { document.documentElement.classList.toggle('dark', darkMode); localStorage.setItem('theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
-  useEffect(() => { void loadBackendData().then(() => setLoadedFiles(getLoadedFiles())).catch(() => setError('Could not restore previously uploaded data.')); }, []);
-  const chats = useMemo(() => getAllChats(), [currentChat?.updatedAt, showChat, showBiomedical]);
-  const newChat = () => { const c = createNewChat(); c.messages = [{ id: newId(), role: 'assistant', content: 'Welcome to **ChatAlchemy**. Ask about your uploaded data, live pharmaceutical databases, clinical trials, genes, diseases, compounds, or continue an analysis from the Biomedical workspace.', timestamp: new Date() }]; saveChat(c); setCurrentChat({ ...c }); setShowBiomedical(false); setShowChat(true); setError(null); };
-  const selectChat = (id: string) => { const c = getChatById(id); if (c) { setCurrentChat({ ...c }); setShowChat(true); setShowBiomedical(false); setError(null); } };
-  const removeChat = (id: string) => { deleteChat(id); if (currentChat?.id === id) { setCurrentChat(null); setShowChat(false); } };
-  const renameCurrent = (id: string, name: string) => { if (currentChat?.id === id) setCurrentChat({ ...currentChat, name, updatedAt: new Date() }); };
-  const fileUploaded = () => { setLoadedFiles(getLoadedFiles()); setError(null); if (currentChat) { const m: Message = { id: newId(), role: 'assistant', content: 'Uploaded data is ready. I can filter, count, tabulate, chart, or combine candidate drug names with live evidence.', timestamp: new Date() }; const c = { ...currentChat, messages: [...currentChat.messages, m], updatedAt: new Date() }; setCurrentChat(c); saveChat(c); } };
-  const clearUploaded = () => { void clearData().then(() => setLoadedFiles([])); if (currentChat) { const m: Message = { id: newId(), role: 'assistant', content: 'Uploaded data has been cleared. Live biomedical sources remain available.', timestamp: new Date() }; const c = { ...currentChat, messages: [...currentChat.messages, m], updatedAt: new Date() }; setCurrentChat(c); saveChat(c); } };
-  const send = async (content: string) => {
-    if (!currentChat) return; const user: Message = { id: newId(), role: 'user', content, timestamp: new Date() }; let c: Chat = { ...currentChat, messages: [...currentChat.messages, user], updatedAt: new Date() }; if (currentChat.messages.length === 1) c = { ...c, name: await generateChatName(content) }; setCurrentChat(c); saveChat(c); setLoading(true); setError(null);
-    try {
-      const uploaded = await searchKnowledgeBase(content); const isDataOutput = !!(uploaded.tableData || uploaded.chartData) && !LIVE_TERMS.test(content); let assistant: Message;
-      if (isDataOutput) assistant = { id: newId(), role: 'assistant', content: `I found **${uploaded.matchCount} matching record${uploaded.matchCount === 1 ? '' : 's'}** in your uploaded data.`, timestamp: new Date(), tableData: uploaded.tableData, chartData: uploaded.chartData };
-      else { const conversation = c.messages.slice(-10).map(m => ({ role: m.role, content: m.content })); let data: QueryResponse; if (LIVE_TERMS.test(content)) { const candidates = await getCandidateDrugEvidence(); data = await queryLive(content, conversation, candidates); } else data = await chatApi(conversation, uploaded.text || undefined); assistant = responseMessage(data); if (uploaded.matchCount > 0 && !assistant.tableData && !assistant.chartData && !LIVE_TERMS.test(content)) assistant.content += `\n\nI also matched **${uploaded.matchCount} record(s)** in your uploaded data for this question.`; }
-      c = { ...c, messages: [...c.messages, assistant], updatedAt: new Date() }; setCurrentChat(c); saveChat(c);
-    } catch (e) { const msg = e instanceof Error ? e.message : 'Unknown request error'; setError(msg); const assistant: Message = { id: newId(), role: 'assistant', content: 'I could not complete that request. I did not substitute an unsupported biomedical answer.', timestamp: new Date(), warnings: [msg] }; c = { ...c, messages: [...c.messages, assistant], updatedAt: new Date() }; setCurrentChat(c); saveChat(c); } finally { setLoading(false); }
+  const provenance = (data.evidence || [])
+    .filter(item => {
+      const key = `${item.source}:${item.source_record_id || item.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map(item => ({
+      id: item.id,
+      source: item.source,
+      recordId: item.source_record_id,
+      url: item.source_url,
+    }));
+
+  return {
+    id: newId(),
+    role: 'assistant',
+    content: data.answer,
+    timestamp: new Date(),
+    supportRate: data.supported_claim_rate,
+    warnings: data.warnings,
+    tableData: data.table || undefined,
+    chartData: data.chart || undefined,
+    provenance,
+    evidenceCount: data.evidence?.length || 0,
+    planIntent: data.plan?.intent,
+    claims: (data.claims || []).map(claim => ({
+      text: claim.text,
+      supportIds: claim.support_ids || [],
+      supported: Boolean(claim.supported),
+    })),
+    traces: (data.traces || []).map(trace => ({
+      source: trace.source,
+      operation: trace.operation,
+      ok: trace.ok,
+      latencyMs: trace.latency_ms,
+      resultCount: trace.result_count,
+      error: trace.error,
+    })),
+    conflicts: (data.conflicts || []).map(conflict => ({
+      relation: conflict.relation,
+      reason: conflict.reason,
+    })),
   };
-  const transfer = () => { const latest = getAllChats()[0]; if (latest) { setCurrentChat({ ...latest }); setShowChat(true); } };
-  const home = () => { setCurrentChat(null); setShowBiomedical(false); setShowChat(false); setError(null); };
-  const toggleBiomedical = () => { if (showBiomedical) { setShowBiomedical(false); setShowChat(true); if (!currentChat) { const first = getAllChats()[0]; if (first) setCurrentChat({ ...first }); else newChat(); } } else { setShowBiomedical(true); setShowChat(false); } };
-  const chatView = () => <div className="flex min-w-0 flex-1 flex-col overflow-hidden">{error && <div className="mx-auto mt-2 w-[95%] rounded-lg bg-red-50 p-2 text-sm text-red-600 dark:bg-red-950/30 dark:text-red-300">{error}</div>}<div className="flex-1 overflow-y-auto bg-gradient-to-b from-purple-50 to-white dark:from-gray-900 dark:to-gray-800"><div className="mx-auto max-w-[95%]">{currentChat?.messages.map(m => <ChatMessage key={m.id} message={m} darkMode={darkMode} />)}{isLoading && <div className="flex gap-2 p-5"><span className="h-2 w-2 animate-bounce rounded-full bg-purple-600" /><span className="h-2 w-2 animate-bounce rounded-full bg-purple-600 [animation-delay:-.2s]" /><span className="h-2 w-2 animate-bounce rounded-full bg-purple-600 [animation-delay:-.4s]" /><span className="ml-2 text-xs text-gray-500">Querying evidence…</span></div>}</div></div><ChatInput onSend={send} disabled={isLoading} darkMode={darkMode} /></div>;
-  const landing = () => <div className="flex h-[calc(100vh-4rem)] items-center justify-center bg-gradient-to-b from-purple-50 to-white p-4 dark:from-gray-900 dark:to-gray-800"><div className="w-full max-w-3xl space-y-8"><div className="text-center"><h1 className="mb-3 text-4xl font-bold text-gray-900 dark:text-white">Welcome to ChatAlchemy</h1><p className="text-lg text-gray-600 dark:text-gray-300">Live biomedical evidence, user data analysis, and research-paper exploration in one workspace.</p></div><div className="grid gap-6 md:grid-cols-2"><button onClick={newChat} className="rounded-xl border-2 border-purple-200 bg-white p-6 text-left transition hover:-translate-y-1 hover:border-purple-500 dark:border-purple-800 dark:bg-gray-800"><div className="mb-3 flex items-center gap-3"><Plus className="h-6 w-6 text-purple-600" /><h2 className="text-xl font-semibold dark:text-white">ChatAlchemy</h2></div><p className="text-sm text-gray-600 dark:text-gray-400">Chat with uploaded data and live RxNorm, DailyMed, FDA, trial, ChEMBL, Open Targets, and PubChem evidence.</p></button><button onClick={() => { setShowBiomedical(true); setShowChat(false); setCurrentChat(null); }} className="rounded-xl border-2 border-purple-200 bg-white p-6 text-left transition hover:-translate-y-1 hover:border-purple-500 dark:border-purple-800 dark:bg-gray-800"><div className="mb-3 flex items-center gap-3"><Dna className="h-6 w-6 text-purple-600" /><h2 className="text-xl font-semibold dark:text-white">Biomedical Analysis</h2></div><p className="text-sm text-gray-600 dark:text-gray-400">Analyze PDF/TXT papers, genes, diseases, enrichment, and live evidence networks.</p></button></div>{chats.length > 0 && <div className="rounded-xl bg-white p-6 dark:bg-gray-800"><h2 className="mb-3 flex items-center gap-2 text-xl font-semibold dark:text-white"><MessageSquare className="h-5 w-5 text-purple-600" />Recent Conversations</h2><div className="max-h-64 overflow-y-auto">{chats.slice(0, 8).map(c => <button key={c.id} onClick={() => selectChat(c.id)} className="flex w-full items-center justify-between rounded-lg p-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700"><span className="font-medium text-gray-700 dark:text-gray-200">{c.name}</span><span className="text-xs text-gray-500">{c.updatedAt.toLocaleDateString()}</span></button>)}</div></div>}</div></div>;
-  return <div className={`flex h-screen flex-col ${darkMode ? 'dark' : ''}`}><ChatHeader chatName={currentChat?.name || (showBiomedical ? 'Biomedical Analysis' : 'ChatAlchemy')} chatId={currentChat?.id || null} loadedFiles={loadedFiles} onClearData={clearUploaded} onFileUpload={() => fileUploaded()} onUploadError={setError} onSelectChat={selectChat} onNewChat={newChat} onDeleteChat={removeChat} darkMode={darkMode} toggleTheme={() => setDarkMode(v => !v)} onToggleBiomedical={toggleBiomedical} showBiomedical={showBiomedical} onGoHome={home} onRenameChat={renameCurrent} />{currentChat || showBiomedical ? <div className="relative flex flex-1 overflow-hidden">{showBiomedical && <div className={`${showChat ? 'w-1/2' : 'w-full'} overflow-y-auto`}><BiomedicalModule onTransferToChat={transfer} /></div>}{currentChat && showChat && <div className={`${showBiomedical ? 'w-1/2' : 'w-full'} flex overflow-hidden border-l dark:border-gray-700`}>{chatView()}</div>}{currentChat && showBiomedical && <button onClick={() => setShowChat(v => !v)} title={showChat ? 'Close chat' : 'Open chat'} className={`fixed top-20 z-30 rounded-full p-2 shadow-lg ${showChat ? 'right-[calc(50%-1.5rem)]' : 'right-4'} bg-white text-gray-600 dark:bg-gray-800 dark:text-gray-300`}>{showChat ? <PanelLeftClose className="h-5 w-5" /> : <PanelLeftOpen className="h-5 w-5" />}</button>}</div> : landing()}</div>;
+}
+
+export default function App() {
+  const [currentChat, setCurrentChat] = useState<Chat | null>(null);
+  const [activeView, setActiveView] = useState<ActiveView>('home');
+  const [isLoading, setLoading] = useState(false);
+  const [loadedFiles, setLoadedFiles] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [health, setHealth] = useState<SystemHealth | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [darkMode, setDarkMode] = useState(() =>
+    localStorage.getItem('theme') === 'dark' ||
+    (!localStorage.getItem('theme') && matchMedia('(prefers-color-scheme: dark)').matches),
+  );
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    localStorage.setItem('theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
+
+  useEffect(() => {
+    void loadBackendData()
+      .then(() => setLoadedFiles(getLoadedFiles()))
+      .catch(() => setError('Could not restore previously uploaded data.'));
+    void getSystemHealth()
+      .then(result => {
+        setHealth(result);
+        setHealthError(null);
+      })
+      .catch(err => {
+        setHealth(null);
+        setHealthError(err instanceof Error ? err.message : 'System health check failed');
+      });
+  }, []);
+
+  const chats = useMemo(() => getAllChats(), [currentChat?.updatedAt, activeView]);
+
+  const createChat = (prompt?: string) => {
+    const chat = createNewChat();
+    chat.messages = [
+      {
+        id: newId(),
+        role: 'assistant',
+        content:
+          'Welcome to **ChatAlchemy Research Workspace**. Ask a biomedical question, query live evidence, or combine an uploaded dataset with current drug, target, approval, and trial records.',
+        timestamp: new Date(),
+      },
+    ];
+    saveChat(chat);
+    setCurrentChat({ ...chat });
+    setActiveView('chat');
+    setError(null);
+    if (prompt) {
+      window.setTimeout(
+        () => window.dispatchEvent(new CustomEvent('question-click', { detail: { question: prompt } })),
+        60,
+      );
+    }
+  };
+
+  const selectChat = (id: string) => {
+    const chat = getChatById(id);
+    if (!chat) return;
+    setCurrentChat({ ...chat });
+    setActiveView('chat');
+    setError(null);
+  };
+
+  const removeChat = (id: string) => {
+    deleteChat(id);
+    if (currentChat?.id === id) {
+      setCurrentChat(null);
+      setActiveView('home');
+    }
+  };
+
+  const renameCurrent = (id: string, name: string) => {
+    if (currentChat?.id === id) setCurrentChat({ ...currentChat, name, updatedAt: new Date() });
+  };
+
+  const fileUploaded = () => {
+    setLoadedFiles(getLoadedFiles());
+    setError(null);
+    if (!currentChat) return;
+    const message: Message = {
+      id: newId(),
+      role: 'assistant',
+      content:
+        'Dataset ready. You can filter, count, tabulate, chart, or combine candidate drug names with live FDA, trial, and target evidence.',
+      timestamp: new Date(),
+    };
+    const updated = {
+      ...currentChat,
+      messages: [...currentChat.messages, message],
+      updatedAt: new Date(),
+    };
+    setCurrentChat(updated);
+    saveChat(updated);
+  };
+
+  const clearUploaded = () => {
+    void clearData().then(() => setLoadedFiles([]));
+    if (!currentChat) return;
+    const message: Message = {
+      id: newId(),
+      role: 'assistant',
+      content: 'Local dataset context has been cleared. Live biomedical sources remain available.',
+      timestamp: new Date(),
+    };
+    const updated = {
+      ...currentChat,
+      messages: [...currentChat.messages, message],
+      updatedAt: new Date(),
+    };
+    setCurrentChat(updated);
+    saveChat(updated);
+  };
+
+  const send = async (content: string) => {
+    if (!currentChat) return;
+
+    const user: Message = { id: newId(), role: 'user', content, timestamp: new Date() };
+    let chat: Chat = {
+      ...currentChat,
+      messages: [...currentChat.messages, user],
+      updatedAt: new Date(),
+    };
+    if (currentChat.messages.length === 1) chat = { ...chat, name: await generateChatName(content) };
+    setCurrentChat(chat);
+    saveChat(chat);
+    setLoading(true);
+    setError(null);
+
+    try {
+      const uploaded = await searchKnowledgeBase(content);
+      const explicitLocalOutput = Boolean(uploaded.tableData || uploaded.chartData) &&
+        !/\b(fda|dailymed|clinical\s*trials?|rxnorm|chembl|pubchem|open\s*targets?|target|approved|approval)\b/i.test(content);
+
+      let assistant: Message;
+      if (explicitLocalOutput) {
+        assistant = {
+          id: newId(),
+          role: 'assistant',
+          content: `I found **${uploaded.matchCount} matching record${uploaded.matchCount === 1 ? '' : 's'}** in your local dataset.`,
+          timestamp: new Date(),
+          tableData: uploaded.tableData,
+          chartData: uploaded.chartData,
+          planIntent: 'local_data',
+        };
+      } else {
+        const conversation = chat.messages.slice(-10).map(message => ({
+          role: message.role,
+          content: message.content,
+        }));
+        const userEvidence: unknown[] = await getCandidateDrugEvidence();
+        if (uploaded.matchCount > 0 && uploaded.text) {
+          userEvidence.push({
+            subject: 'uploaded data',
+            predicate: 'uploaded_context',
+            value: uploaded.text.slice(0, 12_000),
+            qualifiers: { match_count: uploaded.matchCount },
+          });
+        }
+        const data = await queryLive(content, conversation, userEvidence);
+        assistant = responseMessage(data);
+        if (uploaded.matchCount > 0 && !assistant.tableData && !assistant.chartData) {
+          assistant.content += `\n\nLocal dataset context: **${uploaded.matchCount} matching record${uploaded.matchCount === 1 ? '' : 's'}** were available to this workflow.`;
+        }
+      }
+
+      chat = { ...chat, messages: [...chat.messages, assistant], updatedAt: new Date() };
+      setCurrentChat(chat);
+      saveChat(chat);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown request error';
+      setError(message);
+      const assistant: Message = {
+        id: newId(),
+        role: 'assistant',
+        content:
+          'I could not complete that research workflow. I did not replace the failed evidence path with an unsupported biomedical answer.',
+        timestamp: new Date(),
+        warnings: [message],
+      };
+      chat = { ...chat, messages: [...chat.messages, assistant], updatedAt: new Date() };
+      setCurrentChat(chat);
+      saveChat(chat);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const transferFromDocuments = () => {
+    const latest = getAllChats()[0];
+    if (latest) setCurrentChat({ ...latest });
+    setActiveView('chat');
+  };
+
+  const goHome = () => {
+    setActiveView('home');
+    setError(null);
+  };
+
+  const openChat = () => {
+    if (currentChat) setActiveView('chat');
+    else if (chats[0]) selectChat(chats[0].id);
+    else createChat();
+  };
+
+  const openDocuments = () => {
+    setActiveView('documents');
+    setError(null);
+  };
+
+  const chatView = () => (
+    <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-slate-50 dark:bg-slate-950">
+      {error && (
+        <div className="mx-auto mt-3 w-[min(94%,980px)] rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
+          {error}
+        </div>
+      )}
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-5xl px-3 py-5 sm:px-6">
+          {currentChat?.messages.map(message => (
+            <ChatMessage key={message.id} message={message} darkMode={darkMode} />
+          ))}
+          {isLoading && (
+            <div className="my-5 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-500 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+              <span className="flex gap-1.5"><span className="h-2 w-2 animate-bounce rounded-full bg-indigo-500" /><span className="h-2 w-2 animate-bounce rounded-full bg-indigo-500 [animation-delay:-.2s]" /><span className="h-2 w-2 animate-bounce rounded-full bg-indigo-500 [animation-delay:-.4s]" /></span>
+              Planning and querying evidence…
+            </div>
+          )}
+        </div>
+      </div>
+      <ChatInput onSend={send} disabled={isLoading} darkMode={darkMode} />
+    </div>
+  );
+
+  return (
+    <div className={`flex h-screen flex-col ${darkMode ? 'dark' : ''}`}>
+      <ChatHeader
+        chatName={currentChat?.name || 'ChatAlchemy'}
+        chatId={currentChat?.id || null}
+        loadedFiles={loadedFiles}
+        onClearData={clearUploaded}
+        onFileUpload={() => fileUploaded()}
+        onUploadError={setError}
+        onSelectChat={selectChat}
+        onNewChat={() => createChat()}
+        onDeleteChat={removeChat}
+        darkMode={darkMode}
+        toggleTheme={() => setDarkMode(value => !value)}
+        activeView={activeView}
+        onGoHome={goHome}
+        onOpenChat={openChat}
+        onOpenDocuments={openDocuments}
+        onRenameChat={renameCurrent}
+        health={health}
+      />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {activeView === 'home' && (
+          <ResearchHome
+            health={health}
+            healthError={healthError}
+            loadedFiles={loadedFiles}
+            chats={chats}
+            onStartChat={createChat}
+            onOpenDocuments={openDocuments}
+            onFileUpload={() => fileUploaded()}
+            onUploadError={setError}
+            onClearData={clearUploaded}
+            onSelectChat={selectChat}
+          />
+        )}
+        {activeView === 'chat' && currentChat && chatView()}
+        {activeView === 'documents' && (
+          <div className="h-full overflow-y-auto">
+            <BiomedicalModule onTransferToChat={transferFromDocuments} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
