@@ -16,9 +16,14 @@ class OpenTargetsSource(LiveSource):
         return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
 
     async def _search_hit(self, query_text: str, entity: str) -> dict | None:
+        # Match the current Open Targets entity-search contract used by the
+        # official Open Targets MCP implementation: search all entity types,
+        # then filter the returned hits locally. Passing entityNames in the
+        # hosted API has proven brittle across deployments and can yield an
+        # empty hit set for valid disease terms such as NSCLC.
         query = '''
-        query Search($q: String!, $entities: [String!]) {
-          search(queryString: $q, entityNames: $entities, page: {index: 0, size: 10}) {
+        query Search($q: String!) {
+          search(queryString: $q, page: {index: 0, size: 20}) {
             hits { id entity name description }
           }
         }
@@ -28,9 +33,10 @@ class OpenTargetsSource(LiveSource):
         for variant in variants:
             payload = await self._post_json(
                 self.endpoint,
-                {"query": query, "variables": {"q": variant, "entities": [entity]}},
+                {"query": query, "variables": {"q": variant}},
             )
-            hits.extend((((payload.get("data") or {}).get("search") or {}).get("hits") or []))
+            returned = (((payload.get("data") or {}).get("search") or {}).get("hits") or [])
+            hits.extend(hit for hit in returned if str(hit.get("entity") or "").lower() == entity.lower())
 
         unique: dict[str, dict] = {}
         for hit in hits:
@@ -45,11 +51,13 @@ class OpenTargetsSource(LiveSource):
 
         def score(hit: dict) -> tuple[float, int]:
             name = self._normalise_name(str(hit.get("name") or ""))
+            description = self._normalise_name(str(hit.get("description") or ""))
             name_tokens = set(name.split())
             overlap = len(wanted_tokens & name_tokens) / max(1, len(wanted_tokens | name_tokens))
             exact = 1.0 if name == wanted else 0.0
             containment = 1.0 if wanted and (wanted in name or name in wanted) else 0.0
-            return (exact * 100 + containment * 20 + overlap * 10, -len(name))
+            description_overlap = len(wanted_tokens & set(description.split())) / max(1, len(wanted_tokens))
+            return (exact * 100 + containment * 20 + overlap * 10 + description_overlap, -len(name))
 
         return max(unique.values(), key=score)
 
