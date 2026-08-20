@@ -24,6 +24,15 @@ from .reasoning import ChatAlchemyEngine
 
 MAX_DATA_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_DOCUMENT_UPLOAD_BYTES = 25 * 1024 * 1024
+LIVE_SOURCE_LABELS = [
+    "RxNorm/RxNav",
+    "DailyMed",
+    "Drugs@FDA/openFDA",
+    "ClinicalTrials.gov",
+    "ChEMBL",
+    "Open Targets",
+    "PubChem",
+]
 
 engine: ChatAlchemyEngine | None = None
 biomedical: BiomedicalService | None = None
@@ -46,8 +55,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ChatAlchemy",
-    version="1.0.0",
-    description="Provenance-preserving reasoning over live biomedical evidence.",
+    version="1.1.0",
+    description="Evidence-first research workspace over live biomedical data sources.",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -68,8 +77,21 @@ async def health():
     return {
         "status": "ok",
         "system": "ChatAlchemy-Live",
+        "version": app.version,
         "local_pharma_database": False,
         "server_llm_configured": bool(llm and llm.available),
+        "model": llm.model if llm and llm.available else None,
+        "research_use_only": True,
+        "live_sources": LIVE_SOURCE_LABELS,
+        "capabilities": [
+            "live biomedical evidence retrieval",
+            "deterministic cross-source joins",
+            "claim-level support verification",
+            "context-aware evidence conflict analysis",
+            "CSV/XLS/XLSX analysis",
+            "PDF/TXT biomedical analysis",
+            "gene-disease-drug evidence networks",
+        ],
     }
 
 
