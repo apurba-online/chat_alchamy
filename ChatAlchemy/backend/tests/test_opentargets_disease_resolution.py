@@ -12,16 +12,24 @@ class FakeOpenTargets(OpenTargetsSource):
         self.queries.append(payload)
         query = payload['query']
         if 'query Search' in query:
+            assert 'entityNames' not in query
+            assert 'entities' not in payload['variables']
             return {
                 'data': {
                     'search': {
                         'hits': [
                             {
+                                'id': 'ENSG00000146648',
+                                'entity': 'target',
+                                'name': 'EGFR',
+                                'description': 'epidermal growth factor receptor',
+                            },
+                            {
                                 'id': 'EFO_0003060',
                                 'entity': 'disease',
                                 'name': 'non-small cell lung carcinoma',
                                 'description': 'NSCLC',
-                            }
+                            },
                         ]
                     }
                 }
@@ -56,7 +64,7 @@ class FakeOpenTargets(OpenTargetsSource):
 
 
 @pytest.mark.asyncio
-async def test_disease_genes_uses_current_association_query_and_preserves_contract():
+async def test_disease_genes_uses_unfiltered_search_then_current_association_query():
     source = FakeOpenTargets()
     rows = await source.disease_genes('non-small-cell lung cancer', max_results=20)
     assert len(rows) == 1
