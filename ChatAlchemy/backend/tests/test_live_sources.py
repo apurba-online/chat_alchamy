@@ -91,6 +91,24 @@ async def test_live_opentargets_disease_gene_query():
 
 
 @pytest.mark.asyncio
+async def test_live_opentargets_egfr_gene_details_query():
+    """Strict gate for current ClinicalTargetFromTarget GraphQL fields."""
+    engine = ChatAlchemyEngine()
+    try:
+        response = await engine.answer("What diseases are associated with gene EGFR in Open Targets?")
+        trace = next((t for t in response.traces if t.source == "Open Targets"), None)
+        assert trace is not None, "No Open Targets trace was recorded"
+        assert trace.ok, trace.error
+        assert response.plan.intent == "gene"
+        assert trace.result_count > 0
+        assert any(e.predicate == "gene_identity" for e in response.evidence)
+        assert any(e.predicate == "gene_disease_association" for e in response.evidence)
+        assert any(e.predicate == "known_drug" for e in response.evidence)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
 async def test_live_pubchem_compound_query():
     engine = ChatAlchemyEngine()
     try:
