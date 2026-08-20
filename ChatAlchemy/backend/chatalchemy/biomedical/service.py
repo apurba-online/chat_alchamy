@@ -20,6 +20,37 @@ class BiomedicalService:
         self.llm = llm
         self.opentargets = opentargets
 
+    @staticmethod
+    def clinical_stage_weight(value: Any) -> int:
+        """Convert Open Targets' string clinical stage into a visualization weight.
+
+        The current Open Targets ClinicalTarget schema defines maxClinicalStage
+        as a String, with values such as "Phase I" through "Phase IV". The graph
+        weight is only a visualization aid, so unknown/non-phase text must remain
+        safe rather than crashing document analysis through `int(...)`.
+        """
+        text = str(value or "").strip().lower()
+        if not text:
+            return 1
+        normalized = re.sub(r"[^a-z0-9]+", " ", text).strip()
+        phase_map = {
+            "phase 1": 1,
+            "phase i": 1,
+            "phase 2": 2,
+            "phase ii": 2,
+            "phase 3": 3,
+            "phase iii": 3,
+            "phase 4": 4,
+            "phase iv": 4,
+        }
+        for label, weight in phase_map.items():
+            if label in normalized:
+                return weight
+        try:
+            return max(1, min(4, int(float(text))))
+        except (TypeError, ValueError):
+            return 1
+
     async def extract_document(self, text: str, filename: str | None = None) -> BiomedicalExtractResponse:
         cleaned = " ".join(text.split())
         if self.llm.available:
@@ -50,8 +81,6 @@ class BiomedicalService:
         summary = " ".join(sentences[:5])[:1800] or f"Processed {filename or 'document'}; no textual summary was available."
         return BiomedicalExtractResponse(summary=summary, genes=genes, suggested_diseases=[])
 
-    # Retained as tested statistical utilities, but not presented as enrichment
-    # until ChatAlchemy has a validated background universe for the selected source.
     @staticmethod
     def benjamini_hochberg(p_values: list[float]) -> list[float]:
         n = len(p_values)
@@ -148,7 +177,9 @@ class BiomedicalService:
                         "source": f"drug:{chembl}",
                         "target": f"gene:{gene}",
                         "label": "targets",
-                        "weight": max(1, int(drug.qualifiers.get("phase") or drug.qualifiers.get("max_clinical_stage") or 1)),
+                        "weight": self.clinical_stage_weight(
+                            drug.qualifiers.get("phase") or drug.qualifiers.get("max_clinical_stage")
+                        ),
                         "type": "drug-gene",
                     }
                 })
