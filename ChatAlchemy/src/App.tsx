@@ -53,6 +53,19 @@ function responseMessage(data: QueryResponse): Message {
     chartData: data.chart || undefined,
     provenance,
     evidenceCount: data.evidence?.length || 0,
+    evidenceRecords: (data.evidence || []).map(item => ({
+      id: item.id,
+      subject: item.subject,
+      predicate: item.predicate,
+      value: item.value,
+      qualifiers: item.qualifiers,
+      source: item.source,
+      recordId: item.source_record_id,
+      url: item.source_url,
+      retrievedAt: item.retrieved_at,
+      sourceVersion: item.source_version,
+      evidenceType: item.evidence_type,
+    })),
     planIntent: data.plan?.intent,
     claims: (data.claims || []).map(claim => ({
       text: claim.text,
@@ -82,6 +95,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [chatRevision, setChatRevision] = useState(0);
   const [darkMode, setDarkMode] = useState(() =>
     localStorage.getItem('theme') === 'dark' ||
     (!localStorage.getItem('theme') && matchMedia('(prefers-color-scheme: dark)').matches),
@@ -107,7 +121,10 @@ export default function App() {
       });
   }, []);
 
-  const chats = useMemo(() => getAllChats(), [currentChat?.updatedAt, activeView]);
+  const chats = useMemo(
+    () => getAllChats(),
+    [chatRevision, currentChat?.updatedAt, activeView],
+  );
 
   const createChat = (prompt?: string) => {
     const chat = createNewChat();
@@ -121,6 +138,7 @@ export default function App() {
       },
     ];
     saveChat(chat);
+    setChatRevision(value => value + 1);
     setCurrentChat({ ...chat });
     setActiveView('chat');
     setError(null);
@@ -142,6 +160,7 @@ export default function App() {
 
   const removeChat = (id: string) => {
     deleteChat(id);
+    setChatRevision(value => value + 1);
     if (currentChat?.id === id) {
       setCurrentChat(null);
       setActiveView('home');
@@ -149,6 +168,7 @@ export default function App() {
   };
 
   const renameCurrent = (id: string, name: string) => {
+    setChatRevision(value => value + 1);
     if (currentChat?.id === id) setCurrentChat({ ...currentChat, name, updatedAt: new Date() });
   };
 
@@ -245,6 +265,7 @@ export default function App() {
       chat = { ...chat, messages: [...chat.messages, assistant], updatedAt: new Date() };
       setCurrentChat(chat);
       saveChat(chat);
+      setChatRevision(value => value + 1);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown request error';
       setError(message);
@@ -259,6 +280,7 @@ export default function App() {
       chat = { ...chat, messages: [...chat.messages, assistant], updatedAt: new Date() };
       setCurrentChat(chat);
       saveChat(chat);
+      setChatRevision(value => value + 1);
     } finally {
       setLoading(false);
     }
@@ -267,6 +289,7 @@ export default function App() {
   const transferFromDocuments = () => {
     const latest = getAllChats()[0];
     if (latest) setCurrentChat({ ...latest });
+    setChatRevision(value => value + 1);
     setActiveView('chat');
   };
 
@@ -293,7 +316,7 @@ export default function App() {
           {error}
         </div>
       )}
-      <div className="flex-1 overflow-y-auto">
+      <div className="scrollbar-subtle flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-5xl px-3 py-5 sm:px-6">
           {currentChat?.messages.map(message => (
             <ChatMessage key={message.id} message={message} darkMode={darkMode} />
@@ -348,7 +371,7 @@ export default function App() {
         )}
         {activeView === 'chat' && currentChat && chatView()}
         {activeView === 'documents' && (
-          <div className="h-full overflow-y-auto">
+          <div className="scrollbar-subtle h-full overflow-y-auto">
             <BiomedicalModule onTransferToChat={transferFromDocuments} />
           </div>
         )}
