@@ -1,2 +1,3 @@
-from .rule_based import RuleBasedPlanner
-__all__=["RuleBasedPlanner"]
+from .user_safe import RuleBasedPlanner
+
+__all__ = ["RuleBasedPlanner"]
