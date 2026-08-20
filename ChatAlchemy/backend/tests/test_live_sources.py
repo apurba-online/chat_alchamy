@@ -75,10 +75,13 @@ async def test_live_dailymed_label_query():
 
 @pytest.mark.asyncio
 async def test_live_opentargets_disease_gene_query():
+    """Release gate for the exact natural-language failure found in preview."""
     engine = ChatAlchemyEngine()
     try:
         response = await engine.answer("What genes are associated with non-small-cell lung cancer?")
-        trace = require_source(response, "Open Targets")
+        trace = next((t for t in response.traces if t.source == "Open Targets"), None)
+        assert trace is not None, "No Open Targets trace was recorded"
+        assert trace.ok, trace.error
         assert response.plan.intent == "disease"
         assert trace.result_count > 0
         assert any(e.predicate == "disease_gene_association" for e in response.evidence)
