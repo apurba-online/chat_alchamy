@@ -175,7 +175,11 @@ class OpenTargetsSource(LiveSource):
           disease(efoId: $id) {
             id
             name
-            associatedTargets(enableIndirect: true, page: {index: 0, size: 50}) {
+            associatedTargets(
+              page: {index: 0, size: 50}
+              orderByScore: "score"
+              enableIndirect: true
+            ) {
               rows { target { id approvedSymbol approvedName } score }
             }
           }
