@@ -63,20 +63,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Resolve frontend dependency lock
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-      - name: Install exactly the resolved dependency graph
+          cache: npm
+          cache-dependency-path: ChatAlchemy/package-lock.json
+      - name: Install committed frontend dependency graph
         run: npm ci
-      - uses: actions/upload-artifact@v4
-        with:
-          name: frontend-package-lock
-          path: ChatAlchemy/package-lock.json
-          retention-days: 7
       - name: Production dependency audit
         run: npm audit --omit=dev --audit-level=high
       - name: Strict TypeScript check
         run: npm run typecheck
-      - run: npm run build
+      - name: Production frontend build
+        run: npm run build
 
   live-contracts:
     needs: [backend-unit, frontend-build]
