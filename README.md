@@ -1,33 +1,64 @@
-# ChatAlchemy-Live
+# ChatAlchemy
 
-ChatAlchemy-Live is a research prototype for provenance-grounded reasoning over **live online pharmaceutical databases**. It does not maintain a downloaded pharmaceutical database or vector index.
+ChatAlchemy is an **evidence-first biomedical research workspace** for auditable reasoning over live biomedical databases. It combines a typed query planner, entity normalization, deterministic cross-source operations, claim verification, source traces, and a server-side language model for conversational synthesis when a typed evidence workflow does not apply.
 
-## Core idea
+ChatAlchemy does **not** maintain a bundled pharmaceutical knowledge base or expose provider credentials to the browser.
 
-Natural-language questions are converted into a typed `QueryPlan`. Deterministic adapters query authoritative online APIs at request time, normalize returned records into a common `EvidenceItem` representation, apply exact operations such as filtering/counting/intersection, assess cross-source context and conflicts, and verify that final claims cite retrieved evidence.
+> Research use only. ChatAlchemy is not a diagnostic, prescribing, or clinical decision-support system.
 
-### Current live sources
+## What the application does
+
+The production research workspace has three connected modes:
+
+1. **Workspace** — start a task such as disease→genes, target→therapies, trials, drug evidence, compound lookup, or general biomedical research.
+2. **Research Chat** — run natural-language questions through one backend planner and inspect evidence, claim support, source failures, conflicts, and retrieval traces.
+3. **Document Lab** — upload PDF/TXT research documents, extract explicit genes/disease context, connect them to live Open Targets evidence, visualize gene–disease–drug networks, and continue the analysis in chat.
+
+It also supports CSV/XLS/XLSX analysis and deterministic joins between candidate drug lists and live FDA/trial/target evidence.
+
+## Current live sources
 
 - RxNorm / RxNav — canonical drug identity
-- DailyMed — current SPL label records
+- DailyMed — SPL label records
 - Drugs@FDA through openFDA — FDA application records
 - ClinicalTrials.gov API v2 — phases, statuses, conditions, interventions
 - ChEMBL web services — drug-target/mechanism relationships
+- Open Targets Platform — gene, disease, association, and clinical-candidate evidence
+- PubChem PUG REST — compound identifiers and chemical properties
+
+## Core method
+
+Natural-language questions are converted into a typed `QueryPlan`. Source adapters query live APIs at request time and normalize returned records into a common `EvidenceItem` representation. ChatAlchemy then performs deterministic operations such as filtering, counting, or cross-source intersection when appropriate, assesses evidence relations/conflicts, and verifies whether final structured claims are supported by retrieved evidence.
+
+General explanatory questions may use the configured server-side model, but the interface visually distinguishes model synthesis from evidence-backed database results.
 
 ## Research-oriented properties
 
-- no bundled drug corpus
-- no persistent pharmaceutical source cache
+- no bundled pharmaceutical corpus
 - source-level routing is explicit and testable
-- every evidence item keeps source/record/timestamp provenance
-- deterministic operations are preferred over LLM arithmetic
-- contextual differences are separated from true conflicts
-- failed sources are surfaced rather than replaced with memorized facts
-- live benchmark gold contracts depend on current APIs, not frozen downloaded records
+- every evidence item can retain source, record ID, URL, qualifiers, and retrieval time
+- deterministic cross-source operations are preferred over model-memory joins
+- contextual differences can be separated from true conflicts
+- source failures are surfaced rather than silently replaced with memorized facts
+- evidence-backed responses can be exported as `ChatAlchemyEvidenceReport/v1` JSON
+- live benchmark oracle contracts depend on current source APIs rather than a frozen downloaded pharmaceutical database
 
-## Run
+## Production application controls
 
-See [`ChatAlchemy/backend/README.md`](ChatAlchemy/backend/README.md) for backend setup and tests.
+- OpenAI/API credentials are server-side only
+- bounded upload and JSON request sizes
+- frontend request timeouts
+- transient-source retry handling
+- security/privacy response headers on Vercel
+- API no-store caching policy
+- explicit research-use/privacy notices
+- local browser chat and dataset persistence for the public research release
+
+See [`ChatAlchemy/PRODUCTION_READINESS.md`](ChatAlchemy/PRODUCTION_READINESS.md) for launch gates, preview validation, privacy boundaries, platform controls, and rollback requirements.
+
+## Run locally
+
+Backend setup and tests are documented in [`ChatAlchemy/backend/README.md`](ChatAlchemy/backend/README.md).
 
 Frontend:
 
@@ -45,4 +76,22 @@ pip install -r requirements.txt
 uvicorn chatalchemy.app:app --reload --port 8000
 ```
 
-Set `VITE_API_URL` if the backend is not running on `http://localhost:8000`.
+Server-side model configuration:
+
+```bash
+export OPENAI_API_KEY="..."
+export OPENAI_MODEL="gpt-5.6-sol"
+```
+
+If the frontend and backend are hosted separately, set `VITE_API_URL` to the backend origin. Vercel deployments normally use same-origin `/api/*` routes.
+
+## Publication method separation
+
+The productization branch is not the frozen confirmatory paper method. The immutable paper method remains pinned at:
+
+- branch: `paper-v1-freeze-2026-08-19`
+- commit: `0b994c97e496d581ef3ae68bdb6503431ea1d664`
+- benchmark: `LiveBioEvidenceBench-v2.1`
+- seed: `1729`
+
+Product/UI changes must not silently replace frozen confirmatory results.
