@@ -176,7 +176,6 @@ class OpenTargetsSource(LiveSource):
             id
             name
             associatedTargets(enableIndirect: true, page: {index: 0, size: 50}) {
-              count
               rows { target { id approvedSymbol approvedName } score }
             }
           }
@@ -188,24 +187,8 @@ class OpenTargetsSource(LiveSource):
             return []
 
         canonical_name = str(obj.get("name") or hit.get("name") or disease)
-        associated = obj.get("associatedTargets") or {}
-        out: list[EvidenceItem] = [
-            EvidenceItem.build(
-                subject=disease,
-                predicate="disease_identity",
-                value=canonical_name,
-                qualifiers={
-                    "efo_id": disease_id,
-                    "requested_name": disease,
-                    "include_indirect": True,
-                    "association_count": associated.get("count"),
-                },
-                source=self.name,
-                source_record_id=disease_id,
-                source_url=f"https://platform.opentargets.org/disease/{disease_id}/associations",
-            )
-        ]
-        for row in (associated.get("rows") or [])[:max_results]:
+        out: list[EvidenceItem] = []
+        for row in ((obj.get("associatedTargets") or {}).get("rows") or [])[:max_results]:
             target = row.get("target") or {}
             if not target.get("approvedSymbol"):
                 continue
