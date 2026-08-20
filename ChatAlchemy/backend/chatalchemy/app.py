@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from io import BytesIO
 
@@ -40,10 +41,15 @@ biomedical: BiomedicalService | None = None
 llm: LLMClient | None = None
 
 
-def _translate_upstream_error(exc: httpx.HTTPStatusError) -> None:
-    request_url = str(exc.request.url)
-    status = exc.response.status_code
-    if "api.openai.com" in request_url and status in {401, 403, 404, 429}:
+def _translate_upstream_error(exc: httpx.HTTPError) -> None:
+    request = getattr(exc, "request", None)
+    request_url = str(request.url) if request is not None else ""
+    status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+
+    if "api.openai.com" in request_url and (
+        isinstance(exc, httpx.RequestError)
+        or status in {401, 403, 404, 408, 409, 429, 500, 502, 503, 504}
+    ):
         raise HTTPException(
             status_code=503,
             detail=(
@@ -70,7 +76,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ChatAlchemy",
-    version="1.1.0",
+    version="1.2.0",
     description="Evidence-first research workspace over live biomedical data sources.",
     lifespan=lifespan,
 )
@@ -93,6 +99,9 @@ async def health():
         "status": "ok",
         "system": "ChatAlchemy-Live",
         "version": app.version,
+        "environment": os.getenv("VERCEL_ENV") or "local",
+        "deployment_commit": os.getenv("VERCEL_GIT_COMMIT_SHA"),
+        "deployment_branch": os.getenv("VERCEL_GIT_COMMIT_REF"),
         "local_pharma_database": False,
         "server_llm_configured": bool(llm and llm.available),
         "model": llm.model if llm and llm.available else None,
@@ -101,8 +110,8 @@ async def health():
         "capabilities": [
             "live biomedical evidence retrieval",
             "deterministic cross-source joins",
-            "claim-level support verification",
-            "context-aware evidence conflict analysis",
+            "claim-to-evidence link validation",
+            "context-aware evidence relation analysis",
             "CSV/XLS/XLSX analysis",
             "PDF/TXT biomedical analysis",
             "gene-disease-drug evidence networks",
@@ -116,7 +125,7 @@ async def query(req: QueryRequest):
         raise RuntimeError("Engine not initialized")
     try:
         return await engine.answer(req.question, req.max_results, req.conversation, req.user_evidence)
-    except httpx.HTTPStatusError as exc:
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _translate_upstream_error(exc)
 
 
@@ -130,7 +139,7 @@ async def chat(req: ChatRequest):
         user_evidence = [{"subject": "uploaded data", "predicate": "uploaded_context", "value": req.uploaded_context}]
     try:
         return (await engine.answer(question, conversation=req.messages, user_evidence=user_evidence)).model_dump()
-    except httpx.HTTPStatusError as exc:
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _translate_upstream_error(exc)
 
 
@@ -155,7 +164,7 @@ async def biomedical_extract(req: BiomedicalExtractRequest):
         raise RuntimeError("Biomedical service not initialized")
     try:
         return await biomedical.extract_document(req.text, req.filename)
-    except httpx.HTTPStatusError as exc:
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _translate_upstream_error(exc)
 
 
@@ -177,7 +186,7 @@ async def biomedical_upload(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail="No readable text was found in the uploaded document")
     try:
         return await biomedical.extract_document(text, filename)
-    except httpx.HTTPStatusError as exc:
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _translate_upstream_error(exc)
 
 
