@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import re
 
+import httpx
+
 from .oracle import LiveOracle as _BaseLiveOracle
 
 
@@ -19,6 +21,22 @@ class LiveOracle(_BaseLiveOracle):
     @staticmethod
     def _normalise(text: str) -> str:
         return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+    @staticmethod
+    def _openfda_no_match(exc: Exception) -> bool:
+        if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code != 404:
+            return False
+        try:
+            payload = exc.response.json()
+        except Exception:
+            return False
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if not isinstance(error, dict):
+            return False
+        return (
+            str(error.get("code") or "").upper() == "NOT_FOUND"
+            and "no matches found" in str(error.get("message") or "").lower()
+        )
 
     async def _ot_search_id(self, query_text: str, entity: str) -> str | None:
         endpoint = "https://api.platform.opentargets.org/api/v4/graphql"
@@ -51,8 +69,8 @@ class LiveOracle(_BaseLiveOracle):
     async def _approvals(self, drug: str, limit: int = 20):
         endpoint = "https://api.fda.gov/drug/drugsfda.json"
         payload = None
-        successful_requests = 0
-        last_error: Exception | None = None
+        valid_empty_requests = 0
+        hard_errors: list[Exception] = []
         searches = [
             f'openfda.generic_name:"{drug}"',
             f'openfda.brand_name:"{drug}"',
@@ -65,19 +83,24 @@ class LiveOracle(_BaseLiveOracle):
                     {"search": search, "limit": min(limit, 100)},
                     attempts=1,
                 )
-                successful_requests += 1
                 if candidate.get("results"):
                     payload = candidate
                     break
-                if payload is None:
-                    payload = candidate
+                valid_empty_requests += 1
             except Exception as exc:
-                last_error = exc
+                if self._openfda_no_match(exc):
+                    valid_empty_requests += 1
+                    continue
+                hard_errors.append(exc)
 
-        if successful_requests == 0 and last_error is not None:
-            raise last_error
+        if payload is None:
+            if hard_errors:
+                raise hard_errors[-1]
+            if valid_empty_requests:
+                return [], []
+            return [], []
 
-        rows = (payload or {}).get("results") or []
+        rows = payload.get("results") or []
         apps = sorted({str(row.get("application_number")) for row in rows if row.get("application_number")})
         return apps, [self._record("Drugs@FDA/openFDA", record) for record in apps]
 
