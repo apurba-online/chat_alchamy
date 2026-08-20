@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from io import BytesIO
 
+import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -37,6 +38,20 @@ LIVE_SOURCE_LABELS = [
 engine: ChatAlchemyEngine | None = None
 biomedical: BiomedicalService | None = None
 llm: LLMClient | None = None
+
+
+def _translate_upstream_error(exc: httpx.HTTPStatusError) -> None:
+    request_url = str(exc.request.url)
+    status = exc.response.status_code
+    if "api.openai.com" in request_url and status in {401, 403, 404, 429}:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The conversational model is temporarily unavailable. "
+                "Live structured biomedical evidence workflows remain available."
+            ),
+        ) from exc
+    raise exc
 
 
 @asynccontextmanager
@@ -99,7 +114,10 @@ async def health():
 async def query(req: QueryRequest):
     if engine is None:
         raise RuntimeError("Engine not initialized")
-    return await engine.answer(req.question, req.max_results, req.conversation, req.user_evidence)
+    try:
+        return await engine.answer(req.question, req.max_results, req.conversation, req.user_evidence)
+    except httpx.HTTPStatusError as exc:
+        _translate_upstream_error(exc)
 
 
 @app.post("/api/chat")
@@ -110,7 +128,10 @@ async def chat(req: ChatRequest):
     user_evidence = []
     if req.uploaded_context:
         user_evidence = [{"subject": "uploaded data", "predicate": "uploaded_context", "value": req.uploaded_context}]
-    return (await engine.answer(question, conversation=req.messages, user_evidence=user_evidence)).model_dump()
+    try:
+        return (await engine.answer(question, conversation=req.messages, user_evidence=user_evidence)).model_dump()
+    except httpx.HTTPStatusError as exc:
+        _translate_upstream_error(exc)
 
 
 @app.post("/api/title")
@@ -132,7 +153,10 @@ async def title(req: TitleRequest):
 async def biomedical_extract(req: BiomedicalExtractRequest):
     if biomedical is None:
         raise RuntimeError("Biomedical service not initialized")
-    return await biomedical.extract_document(req.text, req.filename)
+    try:
+        return await biomedical.extract_document(req.text, req.filename)
+    except httpx.HTTPStatusError as exc:
+        _translate_upstream_error(exc)
 
 
 @app.post("/api/biomedical/upload", response_model=BiomedicalExtractResponse)
@@ -151,7 +175,10 @@ async def biomedical_upload(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail=f"Could not extract document text: {exc}") from exc
     if not text.strip():
         raise HTTPException(status_code=422, detail="No readable text was found in the uploaded document")
-    return await biomedical.extract_document(text, filename)
+    try:
+        return await biomedical.extract_document(text, filename)
+    except httpx.HTTPStatusError as exc:
+        _translate_upstream_error(exc)
 
 
 @app.post("/api/biomedical/analyze")
