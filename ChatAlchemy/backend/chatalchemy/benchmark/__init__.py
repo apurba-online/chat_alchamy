@@ -7,7 +7,8 @@ from .generator import (
     split_sizes,
     validate_cases,
 )
-from .oracle import LiveOracle, OracleResult
+from .direct_oracle import LiveOracle
+from .oracle import OracleResult
 from .oracle_provider import EvaluationOracle
 from .oracle_snapshot import SNAPSHOT_SCHEMA, load_oracle_snapshot, oracle_result_for_case
 from .metrics import (
