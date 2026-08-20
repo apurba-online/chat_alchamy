@@ -1,0 +1,5 @@
+frozen primary campaign authorized 2026-08-19
+split=test
+difficulty=all
+model=gpt-5.1-2025-11-13
+frozen_ref=paper-v1-freeze-2026-08-19
