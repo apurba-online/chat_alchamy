@@ -1,9 +1,12 @@
 from io import BytesIO
 
+import httpx
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
-from chatalchemy.app import app
+from chatalchemy.app import _translate_upstream_error, app
 
 
 def test_health_and_data_routes():
@@ -43,3 +46,15 @@ def test_title_and_biomedical_extract_without_browser_secret():
             json={'text': 'EGFR and TP53 were evaluated in lung cancer.'},
         )
         assert biomedical.status_code == 200 and 'EGFR' in biomedical.json()['genes']
+
+
+def test_openai_access_failure_is_mapped_to_clean_service_error():
+    request = httpx.Request('POST', 'https://api.openai.com/v1/responses')
+    response = httpx.Response(403, request=request)
+    upstream = httpx.HTTPStatusError('forbidden', request=request, response=response)
+
+    with pytest.raises(HTTPException) as caught:
+        _translate_upstream_error(upstream)
+
+    assert caught.value.status_code == 503
+    assert 'temporarily unavailable' in str(caught.value.detail).lower()
