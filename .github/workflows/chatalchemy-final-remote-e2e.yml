@@ -1,0 +1,182 @@
+name: ChatAlchemy Final Remote E2E
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  deployed-preview-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      BASE_URL: https://chat-alchemy-qspyaeljt-ahsan247s-projects.vercel.app
+      SHARE_URL: https://chat-alchemy-qspyaeljt-ahsan247s-projects.vercel.app/?_vercel_share=kjqji2JPLKnLaNkMbfAACjbRSQ2RNah1
+      EXPECTED_SHA: f13c3aa8e887b2ddece4badcd29987104ea39c64
+    steps:
+      - name: Establish protected preview session
+        run: |
+          set -euo pipefail
+          curl -fsSL --max-time 30 -c "$RUNNER_TEMP/vercel-cookie.txt" "$SHARE_URL" -o /dev/null
+          printf 'cookie = "%s"\ncookie-jar = "%s"\n' "$RUNNER_TEMP/vercel-cookie.txt" "$RUNNER_TEMP/vercel-cookie.txt" > "$HOME/.curlrc"
+
+      - name: Verify exact deployed release candidate
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 30 "$BASE_URL/api/health" -D health-headers.txt -o health.json
+          python - <<'PY'
+          import json, os
+          p=json.load(open('health.json'))
+          assert p['status']=='ok',p
+          assert p['deployment_commit']==os.environ['EXPECTED_SHA'],p
+          assert p['deployment_branch']=='agent/chatalchemy-production-ready',p
+          assert p['server_llm_configured'] is True,p
+          assert p['model']=='gpt-5.6-sol',p
+          assert p['research_use_only'] is True,p
+          assert len(p['live_sources'])==7,p
+          assert p['direct_upload_limit_bytes']==4*1024*1024,p
+          assert p['instance_concurrency_limit']>=1,p
+          headers=open('health-headers.txt').read().lower()
+          assert 'x-request-id:' in headers,headers
+          print('health/release identity PASS',p['deployment_commit'])
+          PY
+
+      - name: Validate critical structured biomedical workflows
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, subprocess
+          base=os.environ['BASE_URL']
+          cases=[
+            ('nsclc_genes','What genes are associated with non-small-cell lung cancer?','disease',True),
+            ('egfr_gene','What diseases are associated with gene EGFR in Open Targets?','gene',True),
+            ('egfr_target','Which drugs target EGFR?','target_drugs',True),
+            ('fda','What FDA approval information is available for pembrolizumab?','approval',True),
+            ('trials','List Phase 3 trials involving pembrolizumab for non-small-cell lung cancer.','trials',True),
+            ('pubchem','What are the PubChem compound properties of gefitinib?','compound',True),
+            ('rxnorm','What is the generic identity of Tylenol?','identity',True),
+            ('cross','Which FDA-approved drugs targeting EGFR also have recruiting Phase 3 trials for non-small-cell lung cancer?','cross_source',False),
+          ]
+          summary=[]
+          for cid,q,intent,need_evidence in cases:
+            body=json.dumps({'question':q,'max_results':8})
+            r=subprocess.run(['curl','-sS','--max-time','120','-w','\n%{http_code}','-H','Content-Type: application/json','-X','POST','--data-binary',body,f'{base}/api/query'],capture_output=True,text=True)
+            raw,_,status=r.stdout.rpartition('\n')
+            assert r.returncode==0,(cid,r.stderr)
+            assert status=='200',(cid,status,raw[:1200])
+            p=json.loads(raw)
+            assert p['plan']['intent']==intent,(cid,p['plan'])
+            failed=[t for t in p.get('traces',[]) if not t.get('ok')]
+            assert not failed,(cid,failed,p.get('warnings'))
+            if need_evidence:
+              assert p.get('evidence'),(cid,p.get('answer'))
+            if cid=='nsclc_genes':
+              assert '0 associated target gene' not in (p.get('answer') or '').lower(),p.get('answer')
+              assert any(str(e.get('value','')).upper()=='EGFR' for e in p.get('evidence',[])),p.get('evidence')
+            summary.append({'id':cid,'intent':intent,'evidence':len(p.get('evidence',[])),'claims':len(p.get('claims',[])),'traces':len(p.get('traces',[]))})
+            print(cid,'PASS',summary[-1])
+          open('structured-e2e.json','w').write(json.dumps(summary,indent=2)+'\n')
+          PY
+
+      - name: Validate research chat and model route
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 120 -H 'Content-Type: application/json' -X POST \
+            --data-binary '{"messages":[{"role":"user","content":"What genes are associated with non-small-cell lung cancer?"}]}' \
+            "$BASE_URL/api/chat" -o chat.json
+          python - <<'PY'
+          import json
+          p=json.load(open('chat.json'))
+          assert p['plan']['intent']=='disease',p.get('plan')
+          assert p.get('evidence'),p.get('answer')
+          assert all(t.get('ok') for t in p.get('traces',[])),p.get('traces')
+          print('research chat PASS')
+          PY
+          curl -fsS --max-time 90 -H 'Content-Type: application/json' -X POST \
+            --data-binary '{"text":"What genes are associated with non-small-cell lung cancer?"}' \
+            "$BASE_URL/api/title" -o title.json
+          python - <<'PY'
+          import json
+          p=json.load(open('title.json'))
+          assert p.get('title') and len(p['title'])<=80,p
+          print('title/model route PASS',p['title'])
+          PY
+
+      - name: Validate document extraction and biomedical network analysis
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 120 -H 'Content-Type: application/json' -X POST \
+            --data-binary '{"text":"EGFR alterations are important in non-small-cell lung cancer. Osimertinib is an EGFR-targeted therapy.","filename":"smoke.txt"}' \
+            "$BASE_URL/api/biomedical/extract" -o extract.json
+          python - <<'PY'
+          import json
+          p=json.load(open('extract.json'))
+          assert p.get('summary'),p
+          assert isinstance(p.get('genes'),list),p
+          print('document extraction PASS')
+          PY
+          curl -fsS --max-time 180 -H 'Content-Type: application/json' -X POST \
+            --data-binary '{"genes":["EGFR"],"paper_summary":"Remote release smoke"}' \
+            "$BASE_URL/api/biomedical/analyze" -o analyze.json
+          python - <<'PY'
+          import json
+          p=json.load(open('analyze.json'))
+          assert 'EGFR' in p.get('genes',[]),p
+          assert p.get('tableData',{}).get('rows'),p
+          assert p.get('evidence'),p
+          assert p.get('networkData'),p
+          print('biomedical network analysis PASS',len(p['evidence']),len(p['networkData']))
+          PY
+
+      - name: Validate tabular upload and safe Excel export
+        run: |
+          set -euo pipefail
+          printf 'drug,status\nosimertinib,approved\ngefitinib,approved\n' > smoke.csv
+          curl -fsS --max-time 60 -F 'file=@smoke.csv;type=text/csv' "$BASE_URL/api/data/parse" -o parsed.json
+          python - <<'PY'
+          import json
+          p=json.load(open('parsed.json'))
+          assert p['filename']=='smoke.csv',p
+          assert len(p['rows'])==2,p
+          assert p['rows'][0]['drug']=='osimertinib',p
+          print('CSV upload/parse PASS')
+          PY
+          curl -fsS --max-time 60 -H 'Content-Type: application/json' -X POST \
+            --data-binary '{"headers":["drug","value"],"rows":[["osimertinib","approved"],["=HYPERLINK(\"https://example.invalid\",\"x\")","literal"]]}' \
+            "$BASE_URL/api/data/export_xlsx" -o export.xlsx
+          python - <<'PY'
+          from pathlib import Path
+          b=Path('export.xlsx').read_bytes()
+          assert b[:2]==b'PK' and len(b)>1000
+          print('XLSX export PASS',len(b))
+          PY
+
+      - name: Validate request bounds and clean errors
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          open('oversize.json','w').write(json.dumps({'question':'x'*9000}))
+          PY
+          code=$(curl -sS --max-time 30 -o oversize-response.json -w '%{http_code}' -H 'Content-Type: application/json' -X POST --data-binary @oversize.json "$BASE_URL/api/query")
+          test "$code" = '422'
+          echo 'request bounds PASS'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chatalchemy-final-remote-e2e
+          path: |
+            health.json
+            health-headers.txt
+            structured-e2e.json
+            chat.json
+            title.json
+            extract.json
+            analyze.json
+            parsed.json
+            export.xlsx
+            oversize-response.json
+          if-no-files-found: ignore
+          retention-days: 30
