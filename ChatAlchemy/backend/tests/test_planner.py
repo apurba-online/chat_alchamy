@@ -23,6 +23,25 @@ def test_planner_core_intents():
     assert p.plan("What are the PubChem compound properties of gefitinib?").intent == "compound"
 
 
+def test_natural_disease_gene_questions_use_live_disease_route():
+    p = RuleBasedPlanner()
+    examples = {
+        "What gene is associated with cancer?": "cancer",
+        "What genes are associated with cancer?": "cancer",
+        "Which genes are responsible for breast cancer?": "breast cancer",
+        "What genes are linked with non-small-cell lung cancer?": "non-small-cell lung cancer",
+        "Which genes drive melanoma?": "melanoma",
+    }
+    for question, disease in examples.items():
+        plan = p.plan(question)
+        assert plan.intent == "disease", (question, plan)
+        assert (_entity(plan, "condition") or "").lower() == disease.lower(), (question, plan)
+        assert plan.operations[0].source == "opentargets"
+        assert plan.operations[0].action == "disease_genes"
+
+    assert p.plan("What gene is associated with cancer?").entities[0].text != "IS"
+
+
 def test_uploaded_list_queries_keep_correct_condition_and_target():
     p = RuleBasedPlanner()
     plan = p.plan("Which drugs in my uploaded list have recruiting Phase 3 trials for non-small-cell lung cancer?")
