@@ -107,7 +107,7 @@ export function ResearchHome({
   onSelectChat,
 }: ResearchHomeProps) {
   return (
-    <main className="min-h-full overflow-y-auto bg-[radial-gradient(circle_at_top_left,_rgba(99,102,241,0.10),_transparent_34%),radial-gradient(circle_at_top_right,_rgba(14,165,233,0.08),_transparent_30%)] px-4 py-8 dark:bg-[radial-gradient(circle_at_top_left,_rgba(99,102,241,0.14),_transparent_34%),radial-gradient(circle_at_top_right,_rgba(14,165,233,0.08),_transparent_30%)] sm:px-6 lg:px-10">
+    <main className="scrollbar-subtle h-full overflow-y-auto bg-[radial-gradient(circle_at_top_left,_rgba(99,102,241,0.10),_transparent_34%),radial-gradient(circle_at_top_right,_rgba(14,165,233,0.08),_transparent_30%)] px-4 py-8 dark:bg-[radial-gradient(circle_at_top_left,_rgba(99,102,241,0.14),_transparent_34%),radial-gradient(circle_at_top_right,_rgba(14,165,233,0.08),_transparent_30%)] sm:px-6 lg:px-10">
       <div className="mx-auto max-w-7xl space-y-10">
         <section className="relative overflow-hidden rounded-[2rem] border border-slate-200/70 bg-white/85 p-7 shadow-[0_24px_80px_-40px_rgba(15,23,42,0.35)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/75 sm:p-10 lg:p-12">
           <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full bg-indigo-200/30 blur-3xl dark:bg-indigo-600/10" />
