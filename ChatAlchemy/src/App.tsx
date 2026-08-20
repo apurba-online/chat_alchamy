@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Chat, Message, QueryResponse, SystemHealth } from './types';
 import { ChatHeader } from './components/ChatHeader';
 import { ChatInput } from './components/ChatInput';
@@ -96,6 +96,7 @@ export default function App() {
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [chatRevision, setChatRevision] = useState(0);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const [darkMode, setDarkMode] = useState(() =>
     localStorage.getItem('theme') === 'dark' ||
     (!localStorage.getItem('theme') && matchMedia('(prefers-color-scheme: dark)').matches),
@@ -120,6 +121,19 @@ export default function App() {
         setHealthError(err instanceof Error ? err.message : 'System health check failed');
       });
   }, []);
+
+  useEffect(() => {
+    if (activeView !== 'chat') return;
+    const frame = window.requestAnimationFrame(() => {
+      const scroller = chatScrollRef.current;
+      if (!scroller) return;
+      scroller.scrollTo({
+        top: scroller.scrollHeight,
+        behavior: (currentChat?.messages.length || 0) > 2 ? 'smooth' : 'auto',
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeView, currentChat?.messages.length, isLoading]);
 
   const chats = useMemo(
     () => getAllChats(),
@@ -312,31 +326,41 @@ export default function App() {
   };
 
   const chatView = () => (
-    <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-slate-50 dark:bg-slate-950">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.055),_transparent_34%)] bg-slate-50 dark:bg-[radial-gradient(circle_at_top,_rgba(99,102,241,0.08),_transparent_34%)] dark:bg-slate-950">
       {error && (
-        <div className="mx-auto mt-3 w-[min(94%,980px)] rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
+        <div className="mx-auto mt-3 w-[min(94%,900px)] shrink-0 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
           {error}
         </div>
       )}
-      <div className="scrollbar-subtle flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-5xl px-3 py-5 sm:px-6">
+      <div
+        ref={chatScrollRef}
+        className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto overscroll-contain scroll-smooth"
+      >
+        <div className="mx-auto w-full max-w-4xl px-4 pb-10 pt-6 sm:px-6 sm:pt-8">
           {currentChat?.messages.map(message => (
             <ChatMessage key={message.id} message={message} darkMode={darkMode} />
           ))}
           {isLoading && (
-            <div className="my-5 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-500 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
-              <span className="flex gap-1.5"><span className="h-2 w-2 animate-bounce rounded-full bg-indigo-500" /><span className="h-2 w-2 animate-bounce rounded-full bg-indigo-500 [animation-delay:-.2s]" /><span className="h-2 w-2 animate-bounce rounded-full bg-indigo-500 [animation-delay:-.4s]" /></span>
-              Planning and querying evidence…
+            <div className="my-6 flex items-center gap-3 rounded-2xl border border-slate-200/80 bg-white/90 px-4 py-3.5 text-sm text-slate-500 shadow-sm dark:border-slate-800 dark:bg-slate-900/85 dark:text-slate-400">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-50 dark:bg-indigo-950/50">
+                <span className="flex gap-1"><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-500" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-500 [animation-delay:-.2s]" /><span className="h-1.5 w-1.5 animate-bounce rounded-full bg-indigo-500 [animation-delay:-.4s]" /></span>
+              </span>
+              <div>
+                <div className="font-medium text-slate-700 dark:text-slate-200">Working through the evidence path</div>
+                <div className="mt-0.5 text-xs text-slate-400">Planning the query and checking relevant live sources…</div>
+              </div>
             </div>
           )}
         </div>
       </div>
-      <ChatInput onSend={send} disabled={isLoading} darkMode={darkMode} />
+      <div className="shrink-0">
+        <ChatInput onSend={send} disabled={isLoading} darkMode={darkMode} />
+      </div>
     </div>
   );
 
   return (
-    <div className={`flex h-screen flex-col ${darkMode ? 'dark' : ''}`}>
+    <div className={`flex h-[100dvh] min-h-0 flex-col overflow-hidden ${darkMode ? 'dark' : ''}`}>
       <ChatHeader
         chatName={currentChat?.name || 'ChatAlchemy'}
         chatId={currentChat?.id || null}
