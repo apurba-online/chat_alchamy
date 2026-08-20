@@ -12,6 +12,8 @@ def _load(path: Path) -> dict:
     payload = json.loads(path.read_text())
     if not isinstance(payload, dict) or not isinstance(payload.get("cases"), list):
         raise ValueError(f"{path} is not a benchmark-run JSON object")
+    if payload.get("schema") != "ChatAlchemyBenchmarkRun/v6":
+        raise ValueError(f"unexpected benchmark-run schema in {path}: {payload.get('schema')}")
     return payload
 
 
@@ -47,7 +49,7 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
 
     invariant_run_keys = (
         "seed", "benchmark_n", "split_filter", "difficulty_filter", "max_results", "system",
-        "oracle_mode", "oracle_snapshot_file_sha256",
+        "oracle_mode", "oracle_snapshot_file_sha256", "latency_definition",
     )
     first_meta = runs[0]["run"]
     for run in runs[1:]:
@@ -63,7 +65,7 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
     rows.sort(key=lambda row: str(row.get("id")))
 
     merged = {
-        "schema": "ChatAlchemyBenchmarkRunMerged/v2",
+        "schema": "ChatAlchemyBenchmarkRunMerged/v3",
         "run": {
             **{key: first_meta.get(key) for key in invariant_run_keys},
             "num_shards": declared_shards,
