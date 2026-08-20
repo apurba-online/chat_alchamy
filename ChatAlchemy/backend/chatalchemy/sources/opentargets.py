@@ -34,9 +34,6 @@ class OpenTargetsSource(LiveSource):
         return payload
 
     async def _search_hit(self, query_text: str, entity: str) -> dict | None:
-        # Search all entity types and filter locally. This makes disease/target
-        # resolution robust to wording variants while still validating the
-        # entity type before an identifier is used downstream.
         query = '''
         query Search($q: String!) {
           search(queryString: $q, page: {index: 0, size: 20}) {
@@ -88,11 +85,9 @@ class OpenTargetsSource(LiveSource):
         if not target_id:
             return []
 
-        # Open Targets 26.06 exposes the clinical candidate drug through a
-        # `drug { id name }` GraphQL field. The backing model still contains
-        # drugId/targetId internally, but current GraphQL explicitly replaces
-        # drugId with `drug` and excludes targetId. Querying the backing-model
-        # names therefore produces HTTP 400 on the public API.
+        # Current Open Targets GraphQL replaces backing-model IDs with resolved
+        # objects in ClinicalTargetFromTarget: `drugId` -> `drug`, `diseaseId`
+        # -> `disease`, and `targetId` is excluded entirely.
         query = '''
         query Target($id: String!) {
           target(ensemblId: $id) {
@@ -107,7 +102,10 @@ class OpenTargetsSource(LiveSource):
                 id
                 drug { id name }
                 maxClinicalStage
-                diseases { diseaseId diseaseFromSource }
+                diseases {
+                  diseaseFromSource
+                  disease { id name }
+                }
               }
             }
           }
@@ -158,11 +156,16 @@ class OpenTargetsSource(LiveSource):
             if not drug_id:
                 continue
             disease_items = row.get("diseases") or []
+            mapped_diseases = [item.get("disease") or {} for item in disease_items]
             qualifiers = {
                 "chembl_id": drug_id,
                 "max_clinical_stage": row.get("maxClinicalStage"),
-                "diseases": [item.get("diseaseFromSource") for item in disease_items if item.get("diseaseFromSource")],
-                "disease_ids": [item.get("diseaseId") for item in disease_items if item.get("diseaseId")],
+                "diseases": [
+                    item.get("diseaseFromSource") or mapped.get("name")
+                    for item, mapped in zip(disease_items, mapped_diseases)
+                    if item.get("diseaseFromSource") or mapped.get("name")
+                ],
+                "disease_ids": [mapped.get("id") for mapped in mapped_diseases if mapped.get("id")],
                 "clinical_candidate_id": row.get("id"),
             }
             out.append(
@@ -184,9 +187,6 @@ class OpenTargetsSource(LiveSource):
         if not disease_id:
             return []
 
-        # Open Targets 26.06 documents orderByScore as "<column> <order>".
-        # Using an incomplete value such as "score" can produce GraphQL errors
-        # inside an HTTP 200 response, which previously looked like a valid zero.
         query = '''
         query Disease($id: String!) {
           disease(efoId: $id) {
