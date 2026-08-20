@@ -1,3 +1,4 @@
+import httpx
 import pytest
 
 from chatalchemy.benchmark import LiveOracle
@@ -59,6 +60,40 @@ class EmptyFDAOracle(LiveOracle):
         return None
 
 
+class NoMatch404FDAOracle(LiveOracle):
+    def __init__(self):
+        self.client = None
+
+    async def _get(self, url, *args, **kwargs):
+        request = httpx.Request("GET", url)
+        response = httpx.Response(
+            404,
+            request=request,
+            json={"error": {"code": "NOT_FOUND", "message": "No matches found!"}},
+        )
+        raise httpx.HTTPStatusError("not found", request=request, response=response)
+
+    async def close(self):
+        return None
+
+
+class Broken404FDAOracle(LiveOracle):
+    def __init__(self):
+        self.client = None
+
+    async def _get(self, url, *args, **kwargs):
+        request = httpx.Request("GET", url)
+        response = httpx.Response(
+            404,
+            request=request,
+            json={"error": {"code": "NOT_FOUND", "message": "Endpoint missing"}},
+        )
+        raise httpx.HTTPStatusError("not found", request=request, response=response)
+
+    async def close(self):
+        return None
+
+
 class FailedMechanismOracle(LiveOracle):
     def __init__(self):
         self.client = None
@@ -108,6 +143,21 @@ async def test_direct_oracle_successful_empty_fda_response_remains_valid_empty_g
     values, records = await oracle._approvals("definitely-not-a-drug")
     assert values == []
     assert records == []
+
+
+@pytest.mark.asyncio
+async def test_direct_oracle_openfda_no_match_404_is_valid_empty_gold():
+    oracle = NoMatch404FDAOracle()
+    values, records = await oracle._approvals("definitely-not-a-drug")
+    assert values == []
+    assert records == []
+
+
+@pytest.mark.asyncio
+async def test_direct_oracle_other_openfda_404_is_unavailable():
+    oracle = Broken404FDAOracle()
+    with pytest.raises(httpx.HTTPStatusError):
+        await oracle._approvals("pembrolizumab")
 
 
 @pytest.mark.asyncio
