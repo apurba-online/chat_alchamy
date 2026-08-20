@@ -4,11 +4,19 @@ const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 const DEFAULT_TIMEOUT_MS = 55_000;
 
 async function errorText(response: Response): Promise<string> {
+  const fallback = `Request failed with HTTP ${response.status}`;
+  let text = '';
   try {
-    const data = await response.json();
-    return data?.detail || data?.message || JSON.stringify(data);
+    text = await response.text();
   } catch {
-    return (await response.text()) || `Request failed with HTTP ${response.status}`;
+    return fallback;
+  }
+  if (!text.trim()) return fallback;
+  try {
+    const data = JSON.parse(text);
+    return data?.detail || data?.message || text;
+  } catch {
+    return text;
   }
 }
 
