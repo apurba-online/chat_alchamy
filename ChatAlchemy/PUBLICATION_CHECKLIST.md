@@ -2,93 +2,134 @@
 
 This checklist defines the evidence required before describing ChatAlchemy as publication-ready.
 
-## Method freeze
-- [x] Architecture frozen at commit `0b994c97e496d581ef3ae68bdb6503431ea1d664`.
-- [x] Planner/tool schemas frozen for the confirmatory study.
-- [x] Benchmark version and seed frozen (`LiveBioEvidenceBench-v2.1`, seed `1729`).
-- [x] Test/stress entity pools frozen.
-- [x] Primary outcomes and statistical tests frozen in `PUBLICATION_PROTOCOL.md`.
-- [ ] No tuning performed on the external holdout after it is created.
+## Method versioning
 
-## Software quality
-- [x] Offline unit/mocked integration tests pass.
-- [x] Benchmark leakage/determinism tests pass.
-- [x] Publication artifact CI gate passes.
-- [x] Frontend strict TypeScript check passes.
-- [x] Production frontend build passes.
-- [x] Live source contract tests pass.
-- [x] Frozen-ID live benchmark smoke passes.
-- [x] No client-side secret or bundled pharmaceutical corpus.
+- [x] Historical Freeze v1 preserved at `0b994c97e496d581ef3ae68bdb6503431ea1d664`.
+- [x] Freeze v1 defects documented before final confirmatory results were locked.
+- [x] Benchmark version/seed remain fixed (`LiveBioEvidenceBench-v2.1`, seed `1729`).
+- [x] Public split definitions remain fixed (`dev=300`, `test=900`, `stress=300`).
+- [x] Primary endpoint and statistical family are fixed in `PUBLICATION_PROTOCOL.md`.
+- [ ] Publication Freeze v2 created from the fully validated corrected method.
+- [ ] Exact Freeze v2 SHA recorded in paper/reproducibility files.
+- [ ] Confirmatory workflows pinned to the exact Freeze v2 SHA.
+- [ ] No tuning performed on `test`, `stress`, or the external holdout after Freeze v2.
 
-## Main experiments
-- [ ] Full ChatAlchemy run on frozen test split.
-- [ ] LLM-only baseline on identical test cases.
-- [ ] Same-retrieval LLM baseline on identical test cases.
-- [ ] Unrestricted tool-agent baseline where technically comparable.
+## Pre-freeze software correctness
+
+- [x] Disease→gene natural-language routing regression covered.
+- [x] Open Targets disease resolution handles punctuation/hyphen variants.
+- [x] Open Targets HTTP-200 GraphQL errors are surfaced as failures.
+- [x] Open Targets association ordering uses the current schema contract.
+- [x] Complete openFDA fallback failure is not converted into a successful empty result.
+- [x] Complete ChEMBL mechanism-service failure is not converted into a successful empty result.
+- [x] Python dependencies pinned.
+- [x] Full primary publication campaign restored as manual-only.
+- [x] Confirmatory campaign default model aligned to GPT-5.6 Sol.
+- [x] Deployment SHA/branch/environment exposed in `/api/health`.
+- [ ] Current offline unit/mocked integration tests green.
+- [ ] Publication artifact/security gate green.
+- [ ] Benchmark determinism/leakage/signature/fingerprint gates green.
+- [ ] Strict frontend TypeScript check green.
+- [ ] Production frontend build green.
+- [ ] Production dependency audit green.
+- [ ] Live source contract tests green.
+- [ ] Model credential smoke green.
+
+## Confirmatory automated experiments
+
+All paired systems must use the same frozen oracle snapshot.
+
+- [ ] Frozen direct-source oracle snapshot captured and hashed.
+- [ ] ChatAlchemy-full on `test` (`n=900`).
+- [ ] LLM-only baseline on identical cases.
+- [ ] Same-retrieval LLM baseline on identical cases.
+- [ ] Unrestricted same-tools LLM agent on identical cases.
 - [ ] Full component ablation study.
-- [ ] Common-case analysis for all paired comparisons.
+- [ ] Common-case analysis for paired comparisons with different coverage.
 - [ ] Oracle coverage reported for every system/run.
-
-## Reliability experiments
-- [ ] Conflict evaluation set independently annotated, if conflict classification is retained as a central quantitative claim.
-- [ ] Conflict macro-F1 reported with per-class metrics, if applicable.
-- [ ] Counterfactual GOS/PMIR experiment completed.
+- [ ] `stress` (`n=300`) run and reported separately.
+- [ ] Entity-normalization experiment completed.
 - [ ] Failure-injection experiment completed.
-- [ ] Abstention and unsafe-fallback rates reported.
-- [ ] Source failure cases separated from reasoning errors.
+- [ ] Counterfactual grounding experiment completed.
 
-## Temporal evaluation — optional strengthening evidence
-- [ ] T0 frozen run retained.
-- [ ] Later repeated runs completed on identical case IDs, if temporal claims are included.
-- [ ] Genuine source-state changes separated from API/schema outages, if temporal claims are included.
-- [ ] Temporal adaptation accuracy reported on changed-oracle cases, if temporal claims are included.
+## Evidence-link and relation claims
 
-Temporal evaluation does **not** block the accelerated main submission. If later measurements are unavailable, strong temporal-adaptation claims must be omitted rather than inferred.
+- [x] Current verifier is described as claim-to-evidence link validation, not general semantic entailment verification.
+- [ ] Claim-producing rate reported.
+- [ ] Valid evidence-link rate reported conditional on claim-producing cases.
+- [ ] Fully linked claim-case rate reported.
+- [ ] If conflict/evidence-relation performance is a central claim, dedicated manual annotation completed.
+- [ ] If retained, conflict macro-F1/per-class metrics and inter-rater agreement reported.
 
 ## External validity
-- [ ] Author-independent holdout created after method freeze.
+
+- [ ] Author-independent private holdout created after Freeze v2.
+- [ ] Holdout contains approximately 200–300 natural questions within declared scope.
 - [ ] Holdout fingerprint recorded before evaluation.
 - [ ] Holdout evaluated once without tuning.
-- [ ] Biomedical document subset evaluated separately from templated live-API benchmark, if included as a manuscript claim.
+- [ ] Biomedical document subset evaluated separately if document-grounded scientific claims are retained.
 
-## Human evaluation
-- [ ] 150-200 responses selected with stratification across task families/systems.
+## Human expert evaluation
+
+- [ ] 150–200 responses sampled with task/system stratification.
 - [ ] System identities blinded and response order randomized.
-- [ ] 2-3 biomedical reviewers score independently.
-- [ ] Inter-rater agreement calculated.
-- [ ] Adjudication, if used, reported separately from raw reviewer agreement.
+- [ ] 2–3 biomedical reviewers score independently.
+- [ ] Inter-rater agreement calculated before adjudication.
+- [ ] Raw reviewer scores retained.
+- [ ] Adjudication, if used, reported separately.
 
 ## Statistical reporting
-- [ ] 95% paired-bootstrap CIs reported for paired score differences.
+
+- [ ] 95% paired-bootstrap confidence intervals reported for paired score differences.
 - [ ] Exact McNemar test used for paired binary exact-correct comparisons.
 - [ ] Holm-Bonferroni applied to the pre-specified comparison family.
 - [ ] Effect sizes reported with p-values.
 - [ ] Missing/oracle-unavailable cases not silently treated as failures or successes.
-- [ ] Test and stress results reported separately.
+- [ ] `test` and `stress` results reported separately.
 
 ## Efficiency
-- [ ] p50 and p95 wall-clock latency reported.
+
+- [ ] p50 and p95 end-to-end wall-clock latency reported.
 - [ ] Source latency separated from end-to-end latency.
-- [ ] API calls per case reported.
-- [ ] Model token usage and cost reported for model-based systems.
+- [ ] API/tool calls per case reported.
+- [ ] Model input/output/total tokens reported.
+- [ ] Model cost reported using the recorded experiment-time pricing.
 
 ## Reproducibility artifact
-- [ ] Exact git SHA recorded for every paper table.
-- [ ] Model identifiers and prompt versions recorded.
-- [ ] Benchmark/version/seed included in artifacts.
-- [ ] Raw per-case predictions and oracle outputs retained.
+
+- [ ] Exact Git SHA recorded for every paper table.
+- [ ] Exact model identifier and prompt/configuration version recorded.
+- [ ] Benchmark version/seed/fingerprint included in artifacts.
+- [ ] Frozen oracle snapshot hash retained.
+- [ ] Raw per-case predictions, oracle outputs, traces, and source records retained.
 - [ ] Paper tables generated programmatically from result files.
-- [ ] README contains exact reproduction commands.
-- [ ] Environment/dependency versions archived with final artifact.
-- [x] Manuscript shell created from the frozen implementation/protocol; numerical Results remain artifact-gated.
+- [ ] README contains clean-environment reproduction commands.
+- [x] Backend dependency versions pinned.
+- [ ] Frontend lockfile/version information archived with final artifact.
+- [ ] Final study manifest archived.
 
 ## Claims discipline
+
 - [x] No claim that ChatAlchemy is the first multi-tool biomedical agent.
-- [x] No clinical-safety or treatment recommendation claim.
-- [x] No conflict-resolution novelty claim stronger than experiments support.
-- [x] Product UI features not presented as scientific contributions.
-- [x] Planned limitations explicitly cover templated language, public-source coverage, dynamic-source availability, and absence of clinical validation.
+- [x] No clinical-safety, diagnosis, or treatment-recommendation claim.
+- [x] Product UI features are not presented as scientific contributions.
+- [x] Public benchmark is acknowledged as templated/controlled.
+- [x] Direct-source oracle is not described as infallible or perfectly independent ground truth.
+- [x] Current evidence-link validator is not described as semantic truth verification.
+- [ ] Final limitations match the actual completed experiments.
 
-## Accelerated submission rule
+## Manuscript completion
 
-**Ready for the main submission** requires the automated primary/baseline/ablation/statistical campaign, external-validity evidence or an explicitly narrowed external-validity claim, blinded expert evaluation, and the final reproducibility/manuscript audit. Temporal T1/T2 do not block submission; temporal claims are included only if real later measurements exist.
+- [ ] Related Work written from current primary sources.
+- [ ] No `[...AUTOFILL]` or placeholder result tokens remain.
+- [ ] Abstract values generated from frozen artifacts.
+- [ ] Every Results table traces to saved artifacts.
+- [ ] Discussion reflects measured effects only.
+- [ ] Conclusion written after final results and proportionate to them.
+- [ ] Final references and supplementary/reproducibility materials complete.
+
+## Submission rule
+
+ChatAlchemy is **ready for submission** only when Publication Freeze v2 is immutable, the primary/baseline/ablation campaign is complete, external-validity evidence is completed or claims are explicitly narrowed, required human evaluation is complete, final statistics are generated from frozen artifacts, and the manuscript/reproducibility audit has no unresolved critical item.
+
+Temporal T1/T2 evaluation is optional strengthening evidence. If later measurements are unavailable, temporal-adaptation claims must be omitted rather than inferred.
