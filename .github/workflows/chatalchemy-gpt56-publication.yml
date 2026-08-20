@@ -1,0 +1,658 @@
+name: ChatAlchemy GPT-5.6 Publication Campaign
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - paper-campaign-gpt56-2026-08-19
+    paths:
+      - .github/.gpt56-primary-trigger
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chatalchemy-gpt56-publication
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+  BENCHMARK_SEED: '1729'
+  SHARD_COUNT: '10'
+  CAMPAIGN_MODEL: gpt-5.6-sol
+  CAMPAIGN_SPLIT: test
+  CAMPAIGN_DIFFICULTY: all
+  FROZEN_REF: 0b994c97e496d581ef3ae68bdb6503431ea1d664
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Validate frozen publication artifact
+        run: PYTHONPATH=. python scripts/validate_publication_artifact.py
+      - name: Require OpenAI credential
+        run: test -n "$OPENAI_API_KEY"
+      - name: Structured GPT-5.6 Sol preflight on frozen code
+        run: >-
+          PYTHONPATH=. python scripts/run_model_baseline.py
+          --mode llm_only
+          --model "$CAMPAIGN_MODEL"
+          --seed $BENCHMARK_SEED
+          --split dev
+          --limit 1
+          --out benchmark/gpt56-campaign-preflight.json
+      - name: Assert GPT-5.6 preflight
+        run: |
+          python - <<'PY'
+          import json
+          p = json.load(open('benchmark/gpt56-campaign-preflight.json'))
+          assert p['run']['model'] == 'gpt-5.6-sol', p['run']
+          s = p['summary']
+          assert s['model_error_rate'] == 0, s
+          assert s['baseline_mean_task_score'] is not None, s
+          print('GPT-5.6 Sol structured preflight passed.')
+          PY
+      - name: Record study manifest
+        env:
+          OPENAI_MODEL: gpt-5.6-sol
+          CHAT_ALCHEMY_EXPERIMENT: frozen_primary_campaign_gpt56
+          CHAT_ALCHEMY_SPLIT: test
+          CHAT_ALCHEMY_DIFFICULTY: all
+        run: PYTHONPATH=. python scripts/make_study_manifest.py --model "$CAMPAIGN_MODEL" --out benchmark/campaign-study-manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-campaign-manifest
+          path: |
+            ChatAlchemy/backend/benchmark/campaign-study-manifest.json
+            ChatAlchemy/backend/benchmark/gpt56-campaign-preflight.json
+          retention-days: 90
+
+  oracle-test:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Capture independent test oracle shard
+        run: >-
+          PYTHONPATH=. python scripts/build_oracle_snapshot.py
+          --full --seed $BENCHMARK_SEED
+          --split test --difficulty all
+          --num-shards $SHARD_COUNT
+          --shard-index ${{ matrix.shard }}
+          --out benchmark/oracle-test-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-oracle-test-${{ matrix.shard }}
+          path: ChatAlchemy/backend/benchmark/oracle-test-${{ matrix.shard }}.json
+          retention-days: 90
+
+  merge-oracle-test:
+    needs: oracle-test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gpt56-oracle-test-*
+          path: ChatAlchemy/backend/benchmark/oracle-test-shards
+          merge-multiple: true
+      - name: Merge and fingerprint test oracle
+        run: >-
+          PYTHONPATH=. python scripts/merge_oracle_snapshots.py
+          benchmark/oracle-test-shards/oracle-test-0.json
+          benchmark/oracle-test-shards/oracle-test-1.json
+          benchmark/oracle-test-shards/oracle-test-2.json
+          benchmark/oracle-test-shards/oracle-test-3.json
+          benchmark/oracle-test-shards/oracle-test-4.json
+          benchmark/oracle-test-shards/oracle-test-5.json
+          benchmark/oracle-test-shards/oracle-test-6.json
+          benchmark/oracle-test-shards/oracle-test-7.json
+          benchmark/oracle-test-shards/oracle-test-8.json
+          benchmark/oracle-test-shards/oracle-test-9.json
+          --expected-shards 10
+          --out benchmark/oracle-test.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-oracle-test
+          path: ChatAlchemy/backend/benchmark/oracle-test.json
+          retention-days: 90
+
+  chatalchemy-test:
+    needs: merge-oracle-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: gpt56-oracle-test
+          path: ChatAlchemy/backend/benchmark
+      - name: Run ChatAlchemy test shard
+        run: >-
+          PYTHONPATH=. python scripts/run_live_benchmark.py
+          --full --seed $BENCHMARK_SEED
+          --split test --difficulty all
+          --num-shards $SHARD_COUNT
+          --shard-index ${{ matrix.shard }}
+          --oracle-snapshot benchmark/oracle-test.json
+          --out benchmark/main-test-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-main-test-${{ matrix.shard }}
+          path: ChatAlchemy/backend/benchmark/main-test-${{ matrix.shard }}.json
+          retention-days: 90
+
+  merge-main-test:
+    needs: chatalchemy-test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gpt56-main-test-*
+          path: ChatAlchemy/backend/benchmark/main-test-shards
+          merge-multiple: true
+      - name: Merge primary test result
+        run: PYTHONPATH=. python scripts/merge_benchmark_shards.py benchmark/main-test-shards/*.json --expected-shards 10 --out benchmark/main-test.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-main-test
+          path: ChatAlchemy/backend/benchmark/main-test.json
+          retention-days: 90
+
+  baselines-test:
+    needs: merge-oracle-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: gpt-5.6-sol
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        mode: [llm_only, same_retrieval_llm, unrestricted_tool_agent]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: test -n "$OPENAI_API_KEY"
+      - uses: actions/download-artifact@v4
+        with:
+          name: gpt56-oracle-test
+          path: ChatAlchemy/backend/benchmark
+      - name: Run GPT-5.6 baseline shard
+        run: >-
+          PYTHONPATH=. python scripts/run_model_baseline.py
+          --mode '${{ matrix.mode }}'
+          --model gpt-5.6-sol
+          --seed $BENCHMARK_SEED
+          --split test --difficulty all
+          --limit 0
+          --num-shards $SHARD_COUNT
+          --shard-index ${{ matrix.shard }}
+          --oracle-snapshot benchmark/oracle-test.json
+          --out benchmark/baseline-${{ matrix.mode }}-${{ matrix.shard }}.json
+      - name: Reject silent model failures
+        run: |
+          python - <<'PY'
+          import json, glob
+          p = json.load(open(glob.glob('benchmark/baseline-*.json')[0]))
+          s = p['summary']
+          assert s['model_error_rate'] == 0, s
+          assert s['baseline_mean_task_score'] is not None, s
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-baseline-${{ matrix.mode }}-${{ matrix.shard }}
+          path: ChatAlchemy/backend/benchmark/baseline-${{ matrix.mode }}-${{ matrix.shard }}.json
+          retention-days: 90
+
+  merge-baselines-test:
+    needs: baselines-test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [llm_only, same_retrieval_llm, unrestricted_tool_agent]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gpt56-baseline-${{ matrix.mode }}-*
+          path: ChatAlchemy/backend/benchmark/baseline-shards
+          merge-multiple: true
+      - name: Merge baseline
+        run: PYTHONPATH=. python scripts/merge_model_baseline_shards.py benchmark/baseline-shards/*.json --expected-shards 10 --out benchmark/baseline-${{ matrix.mode }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-baseline-${{ matrix.mode }}
+          path: ChatAlchemy/backend/benchmark/baseline-${{ matrix.mode }}.json
+          retention-days: 90
+
+  ablations-test:
+    needs: merge-oracle-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: gpt56-oracle-test
+          path: ChatAlchemy/backend/benchmark
+      - name: Run ablation shard
+        run: >-
+          PYTHONPATH=. python scripts/run_ablation.py
+          --seed $BENCHMARK_SEED
+          --split test --difficulty all
+          --limit 0
+          --num-shards $SHARD_COUNT
+          --shard-index ${{ matrix.shard }}
+          --oracle-snapshot benchmark/oracle-test.json
+          --out benchmark/ablation-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-ablation-${{ matrix.shard }}
+          path: ChatAlchemy/backend/benchmark/ablation-${{ matrix.shard }}.json
+          retention-days: 90
+
+  merge-ablations-test:
+    needs: ablations-test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gpt56-ablation-*
+          path: ChatAlchemy/backend/benchmark/ablation-shards
+          merge-multiple: true
+      - name: Merge ablations
+        run: PYTHONPATH=. python scripts/merge_ablation_shards.py benchmark/ablation-shards/*.json --expected-shards 10 --out benchmark/ablations-test.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-ablations-test
+          path: ChatAlchemy/backend/benchmark/ablations-test.json
+          retention-days: 90
+
+  paper-primary:
+    needs: [merge-main-test, merge-baselines-test, merge-ablations-test]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: gpt56-main-test
+          path: ChatAlchemy/backend/benchmark/results
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gpt56-baseline-*
+          path: ChatAlchemy/backend/benchmark/results
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: gpt56-ablations-test
+          path: ChatAlchemy/backend/benchmark/results
+      - name: Generate main table and paired statistics
+        run: >-
+          PYTHONPATH=. python scripts/generate_paper_tables.py
+          --system ChatAlchemy=benchmark/results/main-test.json
+          --system LLM-only=benchmark/results/baseline-llm_only.json
+          --system Same-retrieval-LLM=benchmark/results/baseline-same_retrieval_llm.json
+          --system Unrestricted-tools=benchmark/results/baseline-unrestricted_tool_agent.json
+          --reference ChatAlchemy
+          --out-dir benchmark/paper_tables/main
+      - name: Generate ablation table
+        run: >-
+          PYTHONPATH=. python scripts/generate_paper_tables.py
+          --system Ablation=benchmark/results/ablations-test.json
+          --reference Ablation:full
+          --out-dir benchmark/paper_tables/ablations
+      - name: Prepare deterministic failure review sample
+        run: PYTHONPATH=. python scripts/prepare_failure_review.py --results benchmark/results/main-test.json --n 120 --out benchmark/paper_tables/failure_review.csv || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-paper-primary
+          path: ChatAlchemy/backend/benchmark/paper_tables
+          retention-days: 90
+
+  entity-normalization:
+    needs: paper-primary
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Evaluate live entity normalization
+        run: PYTHONPATH=. python scripts/evaluate_entity_normalization.py --split test --out benchmark/entity-normalization.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-entity-normalization
+          path: ChatAlchemy/backend/benchmark/entity-normalization.json
+          retention-days: 90
+
+  counterfactual:
+    needs: paper-primary
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: gpt-5.6-sol
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: test -n "$OPENAI_API_KEY"
+      - name: Run counterfactual grounding evaluation
+        run: PYTHONPATH=. python scripts/run_counterfactual.py --out benchmark/counterfactual.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-counterfactual
+          path: ChatAlchemy/backend/benchmark/counterfactual.json
+          retention-days: 90
+
+  failure-injection:
+    needs: paper-primary
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        source: [rxnorm, dailymed, openfda, clinicaltrials, chembl, opentargets, pubchem]
+        mode: [exception, empty]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Run controlled source failure experiment
+        run: >-
+          PYTHONPATH=. python scripts/run_failure_injection.py
+          --source '${{ matrix.source }}'
+          --mode '${{ matrix.mode }}'
+          --seed $BENCHMARK_SEED
+          --split test --difficulty all
+          --limit 150
+          --out benchmark/failure-${{ matrix.source }}-${{ matrix.mode }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-failure-${{ matrix.source }}-${{ matrix.mode }}
+          path: ChatAlchemy/backend/benchmark/failure-${{ matrix.source }}-${{ matrix.mode }}.json
+          retention-days: 90
+
+  oracle-stress:
+    needs: paper-primary
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Capture stress oracle shard
+        run: >-
+          PYTHONPATH=. python scripts/build_oracle_snapshot.py
+          --full --seed $BENCHMARK_SEED
+          --split stress --difficulty all
+          --num-shards $SHARD_COUNT
+          --shard-index ${{ matrix.shard }}
+          --out benchmark/oracle-stress-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-oracle-stress-${{ matrix.shard }}
+          path: ChatAlchemy/backend/benchmark/oracle-stress-${{ matrix.shard }}.json
+          retention-days: 90
+
+  merge-oracle-stress:
+    needs: oracle-stress
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gpt56-oracle-stress-*
+          path: ChatAlchemy/backend/benchmark/oracle-stress-shards
+          merge-multiple: true
+      - name: Merge stress oracle
+        run: PYTHONPATH=. python scripts/merge_oracle_snapshots.py benchmark/oracle-stress-shards/*.json --expected-shards 10 --out benchmark/oracle-stress.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-oracle-stress
+          path: ChatAlchemy/backend/benchmark/oracle-stress.json
+          retention-days: 90
+
+  stress-main:
+    needs: merge-oracle-stress
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: gpt56-oracle-stress
+          path: ChatAlchemy/backend/benchmark
+      - name: Run stress shard
+        run: >-
+          PYTHONPATH=. python scripts/run_live_benchmark.py
+          --full --seed $BENCHMARK_SEED
+          --split stress --difficulty all
+          --num-shards $SHARD_COUNT
+          --shard-index ${{ matrix.shard }}
+          --oracle-snapshot benchmark/oracle-stress.json
+          --out benchmark/stress-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-stress-${{ matrix.shard }}
+          path: ChatAlchemy/backend/benchmark/stress-${{ matrix.shard }}.json
+          retention-days: 90
+
+  merge-stress:
+    needs: stress-main
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_REF }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gpt56-stress-*
+          path: ChatAlchemy/backend/benchmark/stress-shards
+          merge-multiple: true
+      - name: Merge stress result
+        run: PYTHONPATH=. python scripts/merge_benchmark_shards.py benchmark/stress-shards/*.json --expected-shards 10 --out benchmark/stress.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt56-stress
+          path: ChatAlchemy/backend/benchmark/stress.json
+          retention-days: 90
