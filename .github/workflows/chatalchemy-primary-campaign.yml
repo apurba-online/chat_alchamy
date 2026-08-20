@@ -1,37 +1,26 @@
-name: ChatAlchemy Frozen Primary Campaign
+name: ChatAlchemy V3 Confirmatory Test Campaign
 
 on:
-  workflow_dispatch:
-    inputs:
-      split:
-        description: Confirmatory benchmark split
-        required: true
-        default: test
-        type: choice
-        options: [test, stress, dev]
-      difficulty:
-        description: Difficulty filter
-        required: true
-        default: all
-        type: choice
-        options: [all, easy, medium, hard]
-      model:
-        description: Exact server-side model ID for all model baselines
-        required: true
-        default: gpt-5.6-sol
-        type: string
+  pull_request:
+    branches:
+      - paper-v3-freeze-2026-08-20
 
 permissions:
   contents: read
 
 concurrency:
-  group: chatalchemy-frozen-primary-${{ github.ref }}-${{ inputs.split }}-${{ inputs.model }}
-  cancel-in-progress: false
+  group: chatalchemy-v3-confirmatory-test
+  cancel-in-progress: true
 
 env:
   PYTHONUNBUFFERED: '1'
   BENCHMARK_SEED: '1729'
   SHARD_COUNT: '10'
+  CAMPAIGN_SPLIT: 'test'
+  CAMPAIGN_DIFFICULTY: 'all'
+  CAMPAIGN_MODEL: 'gpt-5.6-sol'
+  METHOD_SHA: 'f13c3aa8e887b2ddece4badcd29987104ea39c64'
+  METHOD_REF: 'paper-v3-freeze-2026-08-20'
 
 jobs:
   validate:
@@ -41,24 +30,28 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: ChatAlchemy/backend/requirements.txt
       - run: pip install -r requirements.txt
+      - name: Verify immutable method checkout
+        run: test "$(git rev-parse HEAD)" = "$METHOD_SHA"
       - name: Validate frozen publication artifact
         run: PYTHONPATH=. python scripts/validate_publication_artifact.py
       - name: Record campaign study manifest
         env:
-          OPENAI_MODEL: ${{ inputs.model }}
-          CHAT_ALCHEMY_EXPERIMENT: frozen_primary_campaign
-          CHAT_ALCHEMY_SPLIT: ${{ inputs.split }}
-          CHAT_ALCHEMY_DIFFICULTY: ${{ inputs.difficulty }}
-        run: PYTHONPATH=. python scripts/make_study_manifest.py --model '${{ inputs.model }}' --out benchmark/campaign-study-manifest.json
+          OPENAI_MODEL: gpt-5.6-sol
+          CHAT_ALCHEMY_EXPERIMENT: v3_confirmatory_test
+          CHAT_ALCHEMY_SPLIT: test
+          CHAT_ALCHEMY_DIFFICULTY: all
+        run: GITHUB_SHA="$METHOD_SHA" PYTHONPATH=. python scripts/make_study_manifest.py --model "$CAMPAIGN_MODEL" --out benchmark/campaign-study-manifest.json
       - uses: actions/upload-artifact@v4
         with:
-          name: campaign-study-manifest
+          name: v3-test-study-manifest
           path: ChatAlchemy/backend/benchmark/campaign-study-manifest.json
           retention-days: 90
 
@@ -76,24 +69,28 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: ChatAlchemy/backend/requirements.txt
       - run: pip install -r requirements.txt
+      - name: Verify immutable method checkout
+        run: test "$(git rev-parse HEAD)" = "$METHOD_SHA"
       - name: Capture independently executed live oracle shard
         run: >-
-          PYTHONPATH=. python scripts/build_oracle_snapshot.py
+          GITHUB_SHA="$METHOD_SHA" PYTHONPATH=. python scripts/build_oracle_snapshot.py
           --full --seed $BENCHMARK_SEED
-          --split '${{ inputs.split }}'
-          --difficulty '${{ inputs.difficulty }}'
+          --split test
+          --difficulty all
           --num-shards $SHARD_COUNT
           --shard-index ${{ matrix.shard }}
           --out benchmark/oracle-shard-${{ matrix.shard }}.json
       - uses: actions/upload-artifact@v4
         with:
-          name: campaign-oracle-shard-${{ matrix.shard }}
+          name: v3-test-oracle-shard-${{ matrix.shard }}
           path: ChatAlchemy/backend/benchmark/oracle-shard-${{ matrix.shard }}.json
           retention-days: 90
 
@@ -105,13 +102,15 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
       - uses: actions/download-artifact@v4
         with:
-          pattern: campaign-oracle-shard-*
+          pattern: v3-test-oracle-shard-*
           path: ChatAlchemy/backend/benchmark/oracle-shards
           merge-multiple: true
       - name: Merge frozen oracle state
@@ -131,7 +130,7 @@ jobs:
           --out benchmark/oracle-snapshot.json
       - uses: actions/upload-artifact@v4
         with:
-          name: campaign-oracle-snapshot
+          name: v3-test-oracle-snapshot
           path: ChatAlchemy/backend/benchmark/oracle-snapshot.json
           retention-days: 90
 
@@ -149,6 +148,8 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -157,21 +158,21 @@ jobs:
       - run: pip install -r requirements.txt
       - uses: actions/download-artifact@v4
         with:
-          name: campaign-oracle-snapshot
+          name: v3-test-oracle-snapshot
           path: ChatAlchemy/backend/benchmark
       - name: Run ChatAlchemy shard against frozen oracle
         run: >-
-          PYTHONPATH=. python scripts/run_live_benchmark.py
+          GITHUB_SHA="$METHOD_SHA" PYTHONPATH=. python scripts/run_live_benchmark.py
           --full --seed $BENCHMARK_SEED
-          --split '${{ inputs.split }}'
-          --difficulty '${{ inputs.difficulty }}'
+          --split test
+          --difficulty all
           --num-shards $SHARD_COUNT
           --shard-index ${{ matrix.shard }}
           --oracle-snapshot benchmark/oracle-snapshot.json
           --out benchmark/main-shard-${{ matrix.shard }}.json
       - uses: actions/upload-artifact@v4
         with:
-          name: campaign-main-shard-${{ matrix.shard }}
+          name: v3-test-main-shard-${{ matrix.shard }}
           path: ChatAlchemy/backend/benchmark/main-shard-${{ matrix.shard }}.json
           retention-days: 90
 
@@ -183,20 +184,22 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
       - uses: actions/download-artifact@v4
         with:
-          pattern: campaign-main-shard-*
+          pattern: v3-test-main-shard-*
           path: ChatAlchemy/backend/benchmark/main-shards
           merge-multiple: true
       - name: Merge ChatAlchemy primary results
         run: PYTHONPATH=. python scripts/merge_benchmark_shards.py benchmark/main-shards/*.json --expected-shards 10 --out benchmark/main-merged.json
       - uses: actions/upload-artifact@v4
         with:
-          name: campaign-main-merged
+          name: v3-test-main-merged
           path: ChatAlchemy/backend/benchmark/main-merged.json
           retention-days: 90
 
@@ -206,7 +209,7 @@ jobs:
     timeout-minutes: 360
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_MODEL: ${{ inputs.model }}
+      OPENAI_MODEL: gpt-5.6-sol
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -218,6 +221,8 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -228,16 +233,16 @@ jobs:
         run: test -n "$OPENAI_API_KEY"
       - uses: actions/download-artifact@v4
         with:
-          name: campaign-oracle-snapshot
+          name: v3-test-oracle-snapshot
           path: ChatAlchemy/backend/benchmark
       - name: Run model baseline shard against frozen oracle
         run: >-
-          PYTHONPATH=. python scripts/run_model_baseline.py
+          GITHUB_SHA="$METHOD_SHA" PYTHONPATH=. python scripts/run_model_baseline.py
           --mode '${{ matrix.mode }}'
-          --model '${{ inputs.model }}'
+          --model gpt-5.6-sol
           --seed $BENCHMARK_SEED
-          --split '${{ inputs.split }}'
-          --difficulty '${{ inputs.difficulty }}'
+          --split test
+          --difficulty all
           --limit 0
           --num-shards $SHARD_COUNT
           --shard-index ${{ matrix.shard }}
@@ -246,7 +251,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: campaign-baseline-${{ matrix.mode }}-${{ matrix.shard }}
+          name: v3-test-baseline-${{ matrix.mode }}-${{ matrix.shard }}
           path: ChatAlchemy/backend/benchmark/baseline-${{ matrix.mode }}-${{ matrix.shard }}.json
           if-no-files-found: error
           retention-days: 90
@@ -263,13 +268,15 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
       - uses: actions/download-artifact@v4
         with:
-          pattern: campaign-baseline-${{ matrix.mode }}-*
+          pattern: v3-test-baseline-${{ matrix.mode }}-*
           path: ChatAlchemy/backend/benchmark/baseline-shards
           merge-multiple: true
       - name: Merge model baseline shards
@@ -280,7 +287,7 @@ jobs:
           --out benchmark/baseline-${{ matrix.mode }}-merged.json
       - uses: actions/upload-artifact@v4
         with:
-          name: campaign-baseline-${{ matrix.mode }}-merged
+          name: v3-test-baseline-${{ matrix.mode }}-merged
           path: ChatAlchemy/backend/benchmark/baseline-${{ matrix.mode }}-merged.json
           retention-days: 90
 
@@ -298,6 +305,8 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -306,14 +315,14 @@ jobs:
       - run: pip install -r requirements.txt
       - uses: actions/download-artifact@v4
         with:
-          name: campaign-oracle-snapshot
+          name: v3-test-oracle-snapshot
           path: ChatAlchemy/backend/benchmark
       - name: Run paired ablation shard against frozen oracle
         run: >-
-          PYTHONPATH=. python scripts/run_ablation.py
+          GITHUB_SHA="$METHOD_SHA" PYTHONPATH=. python scripts/run_ablation.py
           --seed $BENCHMARK_SEED
-          --split '${{ inputs.split }}'
-          --difficulty '${{ inputs.difficulty }}'
+          --split test
+          --difficulty all
           --limit 0
           --num-shards $SHARD_COUNT
           --shard-index ${{ matrix.shard }}
@@ -321,7 +330,7 @@ jobs:
           --out benchmark/ablation-shard-${{ matrix.shard }}.json
       - uses: actions/upload-artifact@v4
         with:
-          name: campaign-ablation-shard-${{ matrix.shard }}
+          name: v3-test-ablation-shard-${{ matrix.shard }}
           path: ChatAlchemy/backend/benchmark/ablation-shard-${{ matrix.shard }}.json
           retention-days: 90
 
@@ -333,20 +342,22 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
       - uses: actions/download-artifact@v4
         with:
-          pattern: campaign-ablation-shard-*
+          pattern: v3-test-ablation-shard-*
           path: ChatAlchemy/backend/benchmark/ablation-shards
           merge-multiple: true
       - name: Merge ablation shards
         run: PYTHONPATH=. python scripts/merge_ablation_shards.py benchmark/ablation-shards/*.json --expected-shards 10 --out benchmark/ablations-merged.json
       - uses: actions/upload-artifact@v4
         with:
-          name: campaign-ablations-merged
+          name: v3-test-ablations-merged
           path: ChatAlchemy/backend/benchmark/ablations-merged.json
           retention-days: 90
 
@@ -358,22 +369,24 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: f13c3aa8e887b2ddece4badcd29987104ea39c64
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
       - uses: actions/download-artifact@v4
         with:
-          name: campaign-main-merged
+          name: v3-test-main-merged
           path: ChatAlchemy/backend/benchmark/results
       - uses: actions/download-artifact@v4
         with:
-          pattern: campaign-baseline-*-merged
+          pattern: v3-test-baseline-*-merged
           path: ChatAlchemy/backend/benchmark/results
           merge-multiple: true
       - uses: actions/download-artifact@v4
         with:
-          name: campaign-ablations-merged
+          name: v3-test-ablations-merged
           path: ChatAlchemy/backend/benchmark/results
       - name: Generate main comparison table and paired statistics
         run: >-
@@ -394,6 +407,6 @@ jobs:
         run: PYTHONPATH=. python scripts/prepare_failure_review.py --results benchmark/results/main-merged.json --n 120 --out benchmark/paper_tables/failure_review.csv || true
       - uses: actions/upload-artifact@v4
         with:
-          name: campaign-paper-tables
+          name: v3-test-paper-tables
           path: ChatAlchemy/backend/benchmark/paper_tables
           retention-days: 90
