@@ -38,6 +38,38 @@ class FakeOracle(LiveOracle):
         return None
 
 
+class FailedRxPropertiesOracle(LiveOracle):
+    def __init__(self):
+        self.client = None
+
+    async def _get(self, url, *args, **kwargs):
+        if url.endswith("/rxcui.json"):
+            return {"idGroup": {"rxnormId": ["161"]}}
+        if url.endswith("/rxcui/161/properties.json"):
+            raise RuntimeError("RxNorm properties unavailable")
+        raise AssertionError(url)
+
+    async def close(self):
+        return None
+
+
+class FailedRxRelatedOracle(LiveOracle):
+    def __init__(self):
+        self.client = None
+
+    async def _get(self, url, *args, **kwargs):
+        if url.endswith("/rxcui.json"):
+            return {"idGroup": {"rxnormId": ["999"]}}
+        if url.endswith("/rxcui/999/properties.json"):
+            return {"properties": {"rxcui": "999", "name": "Example Brand 10 MG", "tty": "SBD"}}
+        if url.endswith("/rxcui/999/related.json"):
+            raise RuntimeError("RxNorm related concepts unavailable")
+        raise AssertionError(url)
+
+    async def close(self):
+        return None
+
+
 class FailedFDAOracle(LiveOracle):
     def __init__(self):
         self.client = None
@@ -128,6 +160,20 @@ async def test_direct_oracle_search_filters_entity_type_locally():
     assert disease_id == "EFO_0003060"
     assert oracle.calls
     assert all("entityNames" not in query for _, query, _ in oracle.calls)
+
+
+@pytest.mark.asyncio
+async def test_direct_oracle_rxnorm_property_outage_is_unavailable_not_empty_gold():
+    oracle = FailedRxPropertiesOracle()
+    with pytest.raises(RuntimeError, match="RxNorm properties unavailable"):
+        await oracle._identity("acetaminophen")
+
+
+@pytest.mark.asyncio
+async def test_direct_oracle_rxnorm_related_outage_is_unavailable_not_brand_identity():
+    oracle = FailedRxRelatedOracle()
+    with pytest.raises(RuntimeError, match="RxNorm related concepts unavailable"):
+        await oracle._identity("Example Brand")
 
 
 @pytest.mark.asyncio
