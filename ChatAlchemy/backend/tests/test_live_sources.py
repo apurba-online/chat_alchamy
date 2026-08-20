@@ -1,5 +1,6 @@
 import pytest
 
+from chatalchemy.benchmark import LiveOracle
 from chatalchemy.reasoning import ChatAlchemyEngine
 
 pytestmark = pytest.mark.live
@@ -92,7 +93,7 @@ async def test_live_opentargets_disease_gene_query():
 
 @pytest.mark.asyncio
 async def test_live_opentargets_egfr_gene_details_query():
-    """Strict gate for current ClinicalTargetFromTarget GraphQL fields."""
+    """Strict product gate for current ClinicalTargetFromTarget GraphQL fields."""
     engine = ChatAlchemyEngine()
     try:
         response = await engine.answer("What diseases are associated with gene EGFR in Open Targets?")
@@ -106,6 +107,20 @@ async def test_live_opentargets_egfr_gene_details_query():
         assert any(e.predicate == "known_drug" for e in response.evidence)
     finally:
         await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_live_direct_oracle_egfr_gene_query():
+    """Strict publication gate for the independently executed direct-source oracle."""
+    oracle = LiveOracle()
+    try:
+        values, records = await oracle._gene("EGFR", limit=10)
+        assert values
+        assert any(value.startswith("gene_disease_association:") for value in values)
+        assert any(value.startswith("known_drug:") for value in values)
+        assert any(record.get("source") == "Open Targets" for record in records)
+    finally:
+        await oracle.close()
 
 
 @pytest.mark.asyncio
