@@ -5,6 +5,20 @@ export interface ProvenanceItem {
   url?: string | null;
 }
 
+export interface EvidenceRecord {
+  id: string;
+  subject?: string;
+  predicate?: string;
+  value?: unknown;
+  qualifiers?: Record<string, unknown>;
+  source: string;
+  recordId?: string | null;
+  url?: string | null;
+  retrievedAt?: string;
+  sourceVersion?: string | null;
+  evidenceType?: string;
+}
+
 export interface ClaimInfo {
   text: string;
   supportIds: string[];
@@ -44,6 +58,7 @@ export interface Message {
   content: string;
   timestamp: Date;
   provenance?: ProvenanceItem[];
+  evidenceRecords?: EvidenceRecord[];
   supportRate?: number;
   warnings?: string[];
   tableData?: TableData;
@@ -112,9 +127,16 @@ export interface QueryResponse {
   }>;
   evidence: Array<{
     id: string;
+    subject?: string;
+    predicate?: string;
+    value?: unknown;
+    qualifiers?: Record<string, unknown>;
     source: string;
     source_record_id?: string | null;
     source_url?: string | null;
+    retrieved_at?: string;
+    source_version?: string | null;
+    evidence_type?: string;
   }>;
   table?: TableData | null;
   chart?: ChartData | null;
