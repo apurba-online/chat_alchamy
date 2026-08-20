@@ -101,10 +101,9 @@ jobs:
     if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
     needs: backend-unit
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_MODEL: gpt-5.1-2025-11-13
     defaults:
       run:
         working-directory: ChatAlchemy/backend
@@ -127,20 +126,57 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
             echo "OPENAI_API_KEY repository secret is not configured."
           fi
-      - name: One-case server-side model smoke
+      - name: Probe project model access
+        id: access
         if: ${{ steps.credential.outputs.available == 'true' }}
+        continue-on-error: true
+        run: PYTHONPATH=. python scripts/check_openai_access.py --out benchmark/openai-access-probe.json
+      - name: Select first accessible research model
+        id: selected
+        if: ${{ steps.credential.outputs.available == 'true' && steps.access.outcome == 'success' }}
+        shell: bash
+        run: |
+          MODEL=$(python - <<'PY'
+          import json
+          payload = json.load(open('benchmark/openai-access-probe.json'))
+          models = payload.get('successful_models') or []
+          if not models:
+              raise SystemExit(2)
+          print(models[0])
+          PY
+          )
+          echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+          echo "Selected accessible model: $MODEL"
+      - name: One-case structured baseline smoke
+        if: ${{ steps.selected.outputs.model != '' }}
         run: >-
           PYTHONPATH=. python scripts/run_model_baseline.py
           --mode llm_only
-          --model gpt-5.1-2025-11-13
+          --model '${{ steps.selected.outputs.model }}'
           --seed 1729
           --split dev
           --limit 1
           --out benchmark/model-credential-smoke.json
+      - name: Assert model baseline produced a valid prediction
+        if: ${{ steps.selected.outputs.model != '' }}
+        run: |
+          python - <<'PY'
+          import json
+          payload = json.load(open('benchmark/model-credential-smoke.json'))
+          summary = payload['summary']
+          assert summary['model_error_rate'] == 0, summary
+          assert summary['baseline_mean_task_score'] is not None, summary
+          print('Structured model baseline preflight passed.')
+          PY
       - uses: actions/upload-artifact@v4
         if: ${{ steps.credential.outputs.available == 'true' && always() }}
         with:
-          name: model-credential-smoke
-          path: ChatAlchemy/backend/benchmark/model-credential-smoke.json
+          name: model-access-smoke
+          path: |
+            ChatAlchemy/backend/benchmark/openai-access-probe.json
+            ChatAlchemy/backend/benchmark/model-credential-smoke.json
           if-no-files-found: ignore
           retention-days: 7
+      - name: Fail if no candidate model is accessible
+        if: ${{ steps.credential.outputs.available == 'true' && steps.access.outcome != 'success' }}
+        run: exit 1
