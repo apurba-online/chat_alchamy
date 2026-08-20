@@ -98,7 +98,7 @@ jobs:
           if-no-files-found: ignore
 
   model-credential-smoke:
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/agent/chatalchemy-paper-system' }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
     needs: backend-unit
     runs-on: ubuntu-latest
     timeout-minutes: 20
