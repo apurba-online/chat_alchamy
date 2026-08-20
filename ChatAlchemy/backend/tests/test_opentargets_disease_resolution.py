@@ -26,7 +26,9 @@ class FakeOpenTargets(OpenTargetsSource):
                     }
                 }
             }
-        assert 'associatedTargets(enableIndirect: true' in query
+        assert 'associatedTargets(' in query
+        assert 'orderByScore: "score"' in query
+        assert 'enableIndirect: true' in query
         assert payload['variables']['id'] == 'EFO_0003060'
         return {
             'data': {
@@ -54,7 +56,7 @@ class FakeOpenTargets(OpenTargetsSource):
 
 
 @pytest.mark.asyncio
-async def test_disease_genes_uses_indirect_associations_and_preserves_contract():
+async def test_disease_genes_uses_current_association_query_and_preserves_contract():
     source = FakeOpenTargets()
     rows = await source.disease_genes('non-small-cell lung cancer', max_results=20)
     assert len(rows) == 1
