@@ -38,6 +38,81 @@ class LiveOracle(_BaseLiveOracle):
             and "no matches found" in str(error.get("message") or "").lower()
         )
 
+    async def _identity(self, drug: str):
+        base = "https://rxnav.nlm.nih.gov/REST"
+        ids: list[str] = []
+        try:
+            exact = await self._get(
+                f"{base}/rxcui.json",
+                {"name": drug, "search": 2},
+                attempts=1,
+            )
+            ids = [str(value) for value in (exact.get("idGroup") or {}).get("rxnormId", []) or []]
+        except Exception:
+            # Approximate term resolution is the intended fallback for aliases.
+            ids = []
+
+        if not ids:
+            approximate = await self._get(
+                f"{base}/approximateTerm.json",
+                {"term": drug, "maxEntries": 8, "option": 1},
+            )
+            ids = [
+                str(candidate.get("rxcui"))
+                for candidate in (approximate.get("approximateGroup") or {}).get("candidate", []) or []
+                if candidate.get("rxcui")
+            ]
+        if not ids:
+            return None, []
+
+        ranked: list[tuple[int, dict]] = []
+        property_successes = 0
+        property_errors: list[Exception] = []
+        for rid in ids[:8]:
+            try:
+                props = (await self._get(f"{base}/rxcui/{rid}/properties.json")).get("properties") or {}
+                property_successes += 1
+            except Exception as exc:
+                property_errors.append(exc)
+                continue
+            if props:
+                ranked.append(({"IN": 0, "PIN": 1, "MIN": 2}.get(props.get("tty", ""), 9), props))
+
+        if not ranked:
+            if property_successes == 0 and property_errors:
+                raise property_errors[-1]
+            return None, []
+
+        ranked.sort(key=lambda item: item[0])
+        best = ranked[0][1]
+        if ranked[0][0] >= 9 and best.get("rxcui"):
+            related_successes = 0
+            related_errors: list[Exception] = []
+            for tty in ("IN", "PIN", "MIN"):
+                try:
+                    related = await self._get(
+                        f"{base}/rxcui/{best['rxcui']}/related.json",
+                        {"tty": tty},
+                        attempts=1,
+                    )
+                    related_successes += 1
+                except Exception as exc:
+                    related_errors.append(exc)
+                    continue
+                concepts = [
+                    concept
+                    for group in (related.get("relatedGroup") or {}).get("conceptGroup", []) or []
+                    for concept in group.get("conceptProperties") or []
+                ]
+                if concepts:
+                    best = concepts[0]
+                    break
+            if related_successes == 0 and related_errors:
+                raise related_errors[-1]
+
+        rid = best.get("rxcui")
+        return str(best.get("name") or drug).lower(), [self._record("RxNorm", rid)]
+
     async def _ot_search_id(self, query_text: str, entity: str) -> str | None:
         endpoint = "https://api.platform.opentargets.org/api/v4/graphql"
         query = '''
