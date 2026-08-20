@@ -10,7 +10,7 @@ from scripts.run_ablation import _aggregate
 
 def _load(path: Path) -> dict:
     payload = json.loads(path.read_text())
-    if payload.get("schema") != "ChatAlchemyAblationRun/v3" or not isinstance(payload.get("systems"), list):
+    if payload.get("schema") != "ChatAlchemyAblationRun/v4" or not isinstance(payload.get("systems"), list):
         raise ValueError(f"{path} is not a current ablation result")
     return payload
 
@@ -35,7 +35,7 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
 
     invariant_keys = (
         "seed", "split_filter", "difficulty_filter", "max_results", "variants",
-        "oracle_mode", "oracle_snapshot_file_sha256",
+        "oracle_mode", "oracle_snapshot_file_sha256", "latency_definition",
     )
     first_meta = runs[0]["run"]
     for run in runs[1:]:
@@ -71,7 +71,7 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
         })
 
     return {
-        "schema": "ChatAlchemyAblationRunMerged/v1",
+        "schema": "ChatAlchemyAblationRunMerged/v2",
         "run": {
             **{key: first_meta.get(key) for key in invariant_keys},
             "num_shards": declared,
