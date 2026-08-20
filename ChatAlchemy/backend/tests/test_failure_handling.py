@@ -64,6 +64,19 @@ class Broken404FDA(OpenFDASource):
         return None
 
 
+class SecretURLSource(LiveSource):
+    name = "SecretTest"
+
+    async def records(self):
+        request = httpx.Request("GET", "https://example.invalid/data?api_key=super-secret-value&q=test")
+        response = httpx.Response(503, request=request)
+        raise httpx.HTTPStatusError(
+            "service unavailable for https://example.invalid/data?api_key=super-secret-value&q=test",
+            request=request,
+            response=response,
+        )
+
+
 class FailingOpenTargets(LiveSource):
     name = "Open Targets"
 
@@ -135,6 +148,21 @@ async def test_non_no_match_openfda_404_remains_a_source_failure():
     assert "HTTPStatusError" in (response.traces[0].error or "")
     assert "no conclusion about the absence" in response.answer.lower()
     assert "no drugs@fda/openfda application records" not in response.answer.lower()
+
+
+@pytest.mark.asyncio
+async def test_source_trace_http_error_does_not_expose_request_api_key():
+    source = SecretURLSource()
+    try:
+        rows, trace = await source.traced("records", source.records())
+    finally:
+        await source.close()
+
+    assert rows == []
+    assert trace.ok is False
+    assert trace.error == "HTTPStatusError: upstream returned HTTP 503"
+    assert "super-secret-value" not in trace.error
+    assert "api_key=" not in trace.error
 
 
 @pytest.mark.asyncio
