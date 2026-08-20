@@ -1,11 +1,6 @@
 name: ChatAlchemy V3 Confirmatory Test Campaign
 
 on:
-  push:
-    branches:
-      - campaign/v3-test-2026-08-20
-    paths:
-      - .github/workflows/chatalchemy-primary-campaign.yml
   pull_request:
     branches:
       - paper-v3-freeze-2026-08-20
@@ -15,7 +10,7 @@ permissions:
 
 concurrency:
   group: chatalchemy-v3-confirmatory-test
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   PYTHONUNBUFFERED: '1'
