@@ -12,6 +12,8 @@ class RxNormSource(LiveSource):
         return (await self._get(f"{self.base_url}/rxcui/{rxcui}/properties.json")).get("properties") or {}
 
     async def _ingredient_for(self, rxcui: str) -> dict | None:
+        successful_requests = 0
+        errors: list[Exception] = []
         for tty in ("IN", "PIN", "MIN"):
             try:
                 data = await self._get(
@@ -19,13 +21,22 @@ class RxNormSource(LiveSource):
                     params={"tty": tty},
                     attempts=1,
                 )
-            except Exception:
+                successful_requests += 1
+            except Exception as exc:
+                errors.append(exc)
                 continue
             candidates: list[dict] = []
             for group in (data.get("relatedGroup") or {}).get("conceptGroup", []) or []:
                 candidates.extend(group.get("conceptProperties") or [])
             if candidates:
                 return candidates[0]
+
+        # If every related-ingredient request failed, returning None would make
+        # the caller silently retain a brand/formulation as the "canonical"
+        # identity. Surface the outage instead. Successful requests with no
+        # ingredient relation remain a legitimate no-relation result.
+        if successful_requests == 0 and errors:
+            raise errors[-1]
         return None
 
     async def resolve(self, drug: str) -> list[EvidenceItem]:
@@ -41,6 +52,9 @@ class RxNormSource(LiveSource):
             )
             rxcuis = [str(x) for x in (exact.get("idGroup") or {}).get("rxnormId", []) or []]
         except Exception:
+            # The approximate-term endpoint is an intentional independent
+            # fallback for alias/brand resolution, so a successful fallback can
+            # still provide a valid identity even if the exact lookup failed.
             rxcuis = []
 
         if not rxcuis:
@@ -48,21 +62,33 @@ class RxNormSource(LiveSource):
                 f"{self.base_url}/approximateTerm.json",
                 params={"term": drug, "maxEntries": 8, "option": 1},
             )
-            rxcuis = [str(c.get("rxcui")) for c in (data.get("approximateGroup") or {}).get("candidate", []) or [] if c.get("rxcui")]
+            rxcuis = [
+                str(candidate.get("rxcui"))
+                for candidate in (data.get("approximateGroup") or {}).get("candidate", []) or []
+                if candidate.get("rxcui")
+            ]
 
         if not rxcuis:
             return []
 
         ranked: list[tuple[int, dict]] = []
+        property_successes = 0
+        property_errors: list[Exception] = []
         for rxcui in rxcuis[:8]:
             try:
                 props = await self._properties(rxcui)
-            except Exception:
+                property_successes += 1
+            except Exception as exc:
+                property_errors.append(exc)
                 continue
             if props:
                 ranked.append(({"IN": 0, "PIN": 1, "MIN": 2}.get(props.get("tty", ""), 9), props))
+
         if not ranked:
+            if property_successes == 0 and property_errors:
+                raise property_errors[-1]
             return []
+
         ranked.sort(key=lambda item: item[0])
         best = ranked[0][1]
 
