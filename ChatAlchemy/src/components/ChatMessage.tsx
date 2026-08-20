@@ -8,6 +8,7 @@ import {
   CircleSlash2,
   Clock3,
   Database,
+  Download,
   ExternalLink,
   FlaskConical,
   Route,
@@ -45,14 +46,40 @@ export function ChatMessage({ message }: { message: Message; darkMode?: boolean 
   const supportedClaims = message.claims?.filter(claim => claim.supported).length || 0;
   const totalClaims = message.claims?.length || 0;
   const failedTraces = message.traces?.filter(trace => !trace.ok) || [];
-  const successfulTraces = message.traces?.filter(trace => trace.ok) || [];
   const routeLabel = message.planIntent ? intentLabels[message.planIntent] || message.planIntent : null;
+
   const clickQuestion = (line: string) =>
     window.dispatchEvent(
       new CustomEvent('question-click', {
         detail: { question: line.replace(/^\[Q\d+\]\s*/, '').trim() },
       }),
     );
+
+  const exportEvidence = () => {
+    const report = {
+      schema: 'ChatAlchemyEvidenceReport/v1',
+      exported_at: new Date().toISOString(),
+      response_timestamp: message.timestamp instanceof Date ? message.timestamp.toISOString() : message.timestamp,
+      route: message.planIntent || null,
+      answer: message.content,
+      supported_claim_rate: message.supportRate ?? null,
+      claims: message.claims || [],
+      evidence: message.evidenceRecords || [],
+      source_traces: message.traces || [],
+      evidence_relations: message.conflicts || [],
+      warnings: message.warnings || [],
+      research_use_only: true,
+    };
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `chatalchemy-evidence-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
 
   if (isUser) {
     return (
@@ -135,13 +162,20 @@ export function ChatMessage({ message }: { message: Message; darkMode?: boolean 
 
       {(hasEvidence || message.traces?.length || message.conflicts?.length) && (
         <div className="border-t border-slate-200 bg-slate-50/70 dark:border-slate-800 dark:bg-slate-950/35">
-          <button
-            onClick={() => setShowEvidence(value => !value)}
-            className="flex w-full items-center justify-between gap-4 px-5 py-3 text-left text-xs font-semibold text-slate-600 transition hover:bg-slate-100/80 dark:text-slate-300 dark:hover:bg-slate-800/50 sm:px-6"
-          >
-            <span className="flex items-center gap-2"><Database className="h-3.5 w-3.5" />Evidence & provenance {message.evidenceCount ? `· ${message.evidenceCount} evidence item${message.evidenceCount === 1 ? '' : 's'}` : ''}</span>
-            {showEvidence ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-          </button>
+          <div className="flex items-center justify-between gap-3 px-5 py-3 sm:px-6">
+            <button
+              onClick={() => setShowEvidence(value => !value)}
+              className="flex min-w-0 flex-1 items-center justify-between gap-4 text-left text-xs font-semibold text-slate-600 dark:text-slate-300"
+            >
+              <span className="flex min-w-0 items-center gap-2"><Database className="h-3.5 w-3.5 shrink-0" /><span className="truncate">Evidence & provenance {message.evidenceCount ? `· ${message.evidenceCount} evidence item${message.evidenceCount === 1 ? '' : 's'}` : ''}</span></span>
+              {showEvidence ? <ChevronUp className="h-4 w-4 shrink-0" /> : <ChevronDown className="h-4 w-4 shrink-0" />}
+            </button>
+            {message.evidenceRecords?.length ? (
+              <button onClick={exportEvidence} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-500 transition hover:border-indigo-200 hover:text-indigo-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-indigo-800 dark:hover:text-indigo-300" title="Export this response with evidence metadata as JSON">
+                <Download className="h-3.5 w-3.5" />Export evidence
+              </button>
+            ) : null}
+          </div>
 
           {showEvidence && (
             <div className="grid gap-5 border-t border-slate-200 px-5 py-5 dark:border-slate-800 sm:px-6 lg:grid-cols-2">
@@ -158,6 +192,9 @@ export function ChatMessage({ message }: { message: Message; darkMode?: boolean 
                     ),
                   ) : <span className="text-xs text-slate-400">No linkable source records were returned.</span>}
                 </div>
+                {message.evidenceRecords?.some(item => item.retrievedAt) && (
+                  <p className="mt-3 text-[11px] text-slate-400">Retrieved {message.evidenceRecords.find(item => item.retrievedAt)?.retrievedAt}</p>
+                )}
               </section>
 
               <section>
@@ -184,7 +221,7 @@ export function ChatMessage({ message }: { message: Message; darkMode?: boolean 
               {message.conflicts?.length ? (
                 <section className="lg:col-span-2">
                   <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Evidence relations</h4>
-                  <div className="mt-3 flex flex-wrap gap-2">{message.conflicts.slice(0, 12).map((conflict, index) => <span key={index} title={conflict.reason} className="rounded-full border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">{conflict.relation.replaceAll('_', ' ')}</span>)}</div>
+                  <div className="mt-3 flex flex-wrap gap-2">{message.conflicts.slice(0, 12).map((conflict, index) => <span key={index} title={conflict.reason} className="rounded-full border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">{conflict.relation.replace(/_/g, ' ')}</span>)}</div>
                 </section>
               ) : null}
             </div>
