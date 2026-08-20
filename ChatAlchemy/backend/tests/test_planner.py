@@ -23,6 +23,52 @@ def test_planner_core_intents():
     assert p.plan("What are the PubChem compound properties of gefitinib?").intent == "compound"
 
 
+def test_natural_disease_gene_questions_use_live_disease_route():
+    p = RuleBasedPlanner()
+    examples = {
+        "What gene is associated with cancer?": "cancer",
+        "What genes are associated with cancer?": "cancer",
+        "Which genes are responsible for breast cancer?": "breast cancer",
+        "What genes are linked with non-small-cell lung cancer?": "non-small-cell lung cancer",
+        "Which genes drive melanoma?": "melanoma",
+    }
+    for question, disease in examples.items():
+        plan = p.plan(question)
+        assert plan.intent == "disease", (question, plan)
+        assert (_entity(plan, "condition") or "").lower() == disease.lower(), (question, plan)
+        assert plan.operations[0].source == "opentargets"
+        assert plan.operations[0].action == "disease_genes"
+
+    assert p.plan("What gene is associated with cancer?").entities[0].text != "IS"
+
+
+def test_condition_only_trial_query_does_not_invent_an_intervention():
+    p = RuleBasedPlanner()
+    plan = p.plan("Find recruiting trials for non-small-cell lung cancer.")
+    assert plan.intent == "trials"
+    assert _entity(plan, "drug") is None
+    assert _entity(plan, "condition") == "non-small-cell lung cancer"
+    assert plan.filters["condition"] == "non-small-cell lung cancer"
+    assert plan.filters["status"] == "RECRUITING"
+    assert all(operation.source != "rxnorm" for operation in plan.operations)
+
+
+def test_subject_first_fda_approval_questions_extract_only_the_drug():
+    p = RuleBasedPlanner()
+    examples = {
+        "Is pembrolizumab FDA approved?": "pembrolizumab",
+        "Has osimertinib been approved by the FDA?": "osimertinib",
+        "Did the FDA approve gefitinib?": "gefitinib",
+    }
+    for question, drug in examples.items():
+        plan = p.plan(question)
+        assert plan.intent == "approval", (question, plan)
+        assert (_entity(plan, "drug") or "").lower() == drug.lower(), (question, plan)
+        for operation in plan.operations:
+            if operation.source in {"rxnorm", "openfda"}:
+                assert (operation.arguments.get("drug") or "").lower() == drug.lower()
+
+
 def test_uploaded_list_queries_keep_correct_condition_and_target():
     p = RuleBasedPlanner()
     plan = p.plan("Which drugs in my uploaded list have recruiting Phase 3 trials for non-small-cell lung cancer?")

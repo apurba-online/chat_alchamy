@@ -7,11 +7,13 @@ from pathlib import Path
 
 from scripts.run_ablation import _aggregate
 
+SUPPORTED_SCHEMAS = {"ChatAlchemyAblationRun/v3", "ChatAlchemyAblationRun/v4"}
+
 
 def _load(path: Path) -> dict:
     payload = json.loads(path.read_text())
-    if payload.get("schema") != "ChatAlchemyAblationRun/v3" or not isinstance(payload.get("systems"), list):
-        raise ValueError(f"{path} is not a current ablation result")
+    if payload.get("schema") not in SUPPORTED_SCHEMAS or not isinstance(payload.get("systems"), list):
+        raise ValueError(f"{path} is not a supported ablation result")
     return payload
 
 
@@ -19,8 +21,13 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
     if not paths:
         raise ValueError("no ablation shards supplied")
     runs = [_load(path) for path in paths]
+
+    schemas = {run.get("schema") for run in runs}
+    if len(schemas) != 1:
+        raise ValueError(f"ablation schema mismatch: {sorted(schemas)}")
+
     fingerprints = {run["benchmark"].get("fingerprint_sha256") for run in runs}
-    if len(fingerprints) != 1:
+    if len(fingerprints) != 1 or None in fingerprints:
         raise ValueError("benchmark fingerprint mismatch across ablation shards")
 
     declared_values = {run["run"].get("num_shards") for run in runs}
@@ -37,10 +44,16 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
         "seed", "split_filter", "difficulty_filter", "max_results", "variants",
         "oracle_mode", "oracle_snapshot_file_sha256",
     )
+    optional_invariants = ("latency_definition",)
     first_meta = runs[0]["run"]
     for run in runs[1:]:
         for key in invariant_keys:
             if run["run"].get(key) != first_meta.get(key):
+                raise ValueError(f"ablation configuration mismatch for {key}")
+        for key in optional_invariants:
+            values = {item["run"].get(key) for item in runs}
+            non_null = {value for value in values if value is not None}
+            if len(non_null) > 1:
                 raise ValueError(f"ablation configuration mismatch for {key}")
 
     variant_names = list(first_meta.get("variants") or [])
@@ -70,10 +83,16 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
             "cases": rows,
         })
 
+    run_meta = {key: first_meta.get(key) for key in invariant_keys}
+    for key in optional_invariants:
+        if first_meta.get(key) is not None:
+            run_meta[key] = first_meta.get(key)
+
     return {
-        "schema": "ChatAlchemyAblationRunMerged/v1",
+        "schema": "ChatAlchemyAblationRunMerged/v2",
+        "source_schema": next(iter(schemas)),
         "run": {
-            **{key: first_meta.get(key) for key in invariant_keys},
+            **run_meta,
             "num_shards": declared,
             "merged_case_count": len(systems[0]["cases"]) if systems else 0,
             "component_git_sha": sorted({str(run["run"].get("git_sha")) for run in runs if run["run"].get("git_sha")}),

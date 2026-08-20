@@ -1,5 +1,6 @@
 import pytest
 
+from chatalchemy.benchmark import LiveOracle
 from chatalchemy.reasoning import ChatAlchemyEngine
 
 pytestmark = pytest.mark.live
@@ -69,5 +70,66 @@ async def test_live_dailymed_label_query():
         require_source(response, "DailyMed")
         assert response.plan.intent == "label"
         assert any(e.predicate == "dailymed_label_record" for e in response.evidence)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_live_opentargets_disease_gene_query():
+    """Release gate for the exact natural-language failure found in preview."""
+    engine = ChatAlchemyEngine()
+    try:
+        response = await engine.answer("What genes are associated with non-small-cell lung cancer?")
+        trace = next((t for t in response.traces if t.source == "Open Targets"), None)
+        assert trace is not None, "No Open Targets trace was recorded"
+        assert trace.ok, trace.error
+        assert response.plan.intent == "disease"
+        assert trace.result_count > 0
+        assert any(e.predicate == "disease_gene_association" for e in response.evidence)
+        assert any(str(e.value).upper() == "EGFR" for e in response.evidence)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_live_opentargets_egfr_gene_details_query():
+    """Strict product gate for current ClinicalTargetFromTarget GraphQL fields."""
+    engine = ChatAlchemyEngine()
+    try:
+        response = await engine.answer("What diseases are associated with gene EGFR in Open Targets?")
+        trace = next((t for t in response.traces if t.source == "Open Targets"), None)
+        assert trace is not None, "No Open Targets trace was recorded"
+        assert trace.ok, trace.error
+        assert response.plan.intent == "gene"
+        assert trace.result_count > 0
+        assert any(e.predicate == "gene_identity" for e in response.evidence)
+        assert any(e.predicate == "gene_disease_association" for e in response.evidence)
+        assert any(e.predicate == "known_drug" for e in response.evidence)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_live_direct_oracle_egfr_gene_query():
+    """Strict publication gate for the independently executed direct-source oracle."""
+    oracle = LiveOracle()
+    try:
+        values, records = await oracle._gene("EGFR", limit=10)
+        assert values
+        assert any(value.startswith("gene_disease_association:") for value in values)
+        assert any(value.startswith("known_drug:") for value in values)
+        assert any(record.get("source") == "Open Targets" for record in records)
+    finally:
+        await oracle.close()
+
+
+@pytest.mark.asyncio
+async def test_live_pubchem_compound_query():
+    engine = ChatAlchemyEngine()
+    try:
+        response = await engine.answer("Give the PubChem CID, canonical SMILES, and IUPAC name for aspirin.")
+        require_source(response, "PubChem")
+        assert response.plan.intent == "compound"
+        assert any(e.predicate == "compound_properties" for e in response.evidence)
     finally:
         await engine.close()

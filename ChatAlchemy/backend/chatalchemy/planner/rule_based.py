@@ -16,6 +16,32 @@ class RuleBasedPlanner:
         "withdrawn": "WITHDRAWN",
     }
 
+    GENE_STOPWORDS = {
+        "IS",
+        "ARE",
+        "WAS",
+        "WERE",
+        "BE",
+        "ASSOCIATED",
+        "RESPONSIBLE",
+        "LINKED",
+        "INVOLVED",
+        "IMPLICATED",
+        "WITH",
+        "FOR",
+        "IN",
+        "TO",
+        "THE",
+        "A",
+        "AN",
+        "WHICH",
+        "WHAT",
+        "CAUSE",
+        "CAUSES",
+        "DRIVE",
+        "DRIVES",
+    }
+
     def plan(self, question: str) -> QueryPlan:
         q = " ".join(question.strip().split())
         low = q.lower()
@@ -42,6 +68,26 @@ class RuleBasedPlanner:
             return QueryPlan(question=q, intent="compound", entities=[Entity(text=drug, type="compound")] if drug else [], operations=[Operation(source="pubchem", action="compound", arguments={"name": drug})], final_operation="list")
         if target and ("drug" in low or "target" in low or "inhibitor" in low or "mechanism" in low or "molecule" in low):
             return QueryPlan(question=q, intent="target_drugs", entities=[Entity(text=target, type="target")], operations=[Operation(source="chembl", action="target_drugs", arguments={"target": target})], final_operation="list")
+
+        # Natural-language disease -> gene questions must be recognized before
+        # the generic single-gene rule. Otherwise phrases such as "gene is"
+        # can be misread as a gene symbol ("IS").
+        disease_from_gene_question = self._disease_from_gene_question(q)
+        if disease_from_gene_question:
+            return QueryPlan(
+                question=q,
+                intent="disease",
+                entities=[Entity(text=disease_from_gene_question, type="condition")],
+                operations=[
+                    Operation(
+                        source="opentargets",
+                        action="disease_genes",
+                        arguments={"disease": disease_from_gene_question},
+                    )
+                ],
+                final_operation="list",
+            )
+
         if any(x in low for x in ["gene", "ensembl", "open targets", "opentargets"]):
             gene = self._gene(q)
             if gene:
@@ -107,16 +153,38 @@ class RuleBasedPlanner:
                 return m.group(1).upper()
         return None
 
-    @staticmethod
-    def _gene(q: str):
+    @classmethod
+    def _gene(cls, q: str):
         m = re.search(r"\bgene\s+([A-Za-z0-9-]{2,20})\b", q, re.I)
         if m:
-            return m.group(1).upper()
+            candidate = m.group(1).upper()
+            if candidate not in cls.GENE_STOPWORDS:
+                return candidate
         m = re.search(r"\b([A-Z][A-Z0-9-]{1,14})\b", q)
-        if m and m.group(1) not in {"FDA", "DNA", "RNA", "NCT", "SPL"}:
+        if m and m.group(1) not in {"FDA", "DNA", "RNA", "NCT", "SPL"} | cls.GENE_STOPWORDS:
             return m.group(1)
         m = re.search(r"(?:target)\s+([A-Za-z0-9-]{2,20})", q, re.I)
-        return m.group(1).upper() if m else None
+        if m:
+            candidate = m.group(1).upper()
+            if candidate not in cls.GENE_STOPWORDS:
+                return candidate
+        return None
+
+    @staticmethod
+    def _disease_from_gene_question(q: str) -> str | None:
+        patterns = [
+            r"\bgenes?\s+(?:is|are|was|were)?\s*(?:associated|linked)\s+with\s+(.+?)(?:\?|$)",
+            r"\bgenes?\s+(?:is|are|was|were)?\s*(?:responsible\s+for|involved\s+in|implicated\s+in)\s+(.+?)(?:\?|$)",
+            r"\b(?:which|what)\s+genes?\s+(?:cause|causes|drive|drives)\s+(.+?)(?:\?|$)",
+            r"\bgenes?\s+(?:for|in)\s+(.+?)(?:\?|$)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, q, re.I)
+            if match:
+                disease = match.group(1).strip(" .?")
+                if disease:
+                    return disease
+        return None
 
     @staticmethod
     def _condition(q: str):

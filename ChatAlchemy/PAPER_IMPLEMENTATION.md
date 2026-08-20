@@ -1,212 +1,203 @@
-# ChatAlchemy-Live: Publication-Grade Implementation Record
+# ChatAlchemy-Live: Publication Implementation Record
 
 ## Scientific scope
 
-ChatAlchemy-Live studies provenance-preserving reasoning over live biomedical databases whose records are distributed across sources, context dependent, potentially conflicting, and time varying. The application demonstrates the system; the paper evaluates the evidence engine, dynamic benchmark, grounding, robustness, and temporal behavior.
+ChatAlchemy-Live studies provenance-preserving reasoning over live biomedical databases whose records are distributed across sources, context dependent, and operationally dynamic. The product demonstrates the system; the paper evaluates the evidence engine, structured composition, provenance/failure behavior, grounding, and robustness.
 
-The system is designed for biomedical **research assistance**, not autonomous clinical decision making.
+The system is designed for biomedical **research assistance**, not diagnosis, prescribing, or autonomous clinical decision making.
 
-## Product implementation retained from the supplied ChatAlchemy project
+## Version history
 
-The paper branch preserves the richer application workflow while replacing unsafe/prototype internals:
-
-- ChatAlchemy and Biomedical Analysis landing modes;
-- persistent/recent chats, rename/delete/new chat, side menu, and dark mode;
-- CSV/XLS/XLSX upload with tables and charts;
-- PDF/TXT biomedical-document processing;
-- gene/disease exploration;
-- Open Targets evidence tables;
-- gene–disease–drug network visualization and export;
-- PubChem compound information;
-- result export and Continue-in-Chat workflow.
-
-OpenAI/model requests are server-side. No browser API credential is required or allowed. The old bundled TTD pharmaceutical dataset is not used as the pharmaceutical knowledge source.
+- Historical Freeze v1: `0b994c97e496d581ef3ae68bdb6503431ea1d664`.
+- Freeze v1 is retained for auditability.
+- Before final confirmatory results were locked, general software/source-contract defects were identified and corrected in the release candidate.
+- Publication Freeze v2 will be created only after the complete validation gate passes.
+- All final confirmatory comparisons must use Freeze v2 and one shared oracle state; no Freeze v1 results may be silently mixed with Freeze v2 results.
 
 ## Live evidence sources
 
-The research engine uses query-time online evidence from:
+The research engine queries live evidence from:
 
 1. RxNorm/RxNav — canonical drug identity;
 2. DailyMed — SPL label records;
 3. Drugs@FDA/openFDA — application/product records;
 4. ClinicalTrials.gov — trial records;
-5. ChEMBL — drug/target mechanism evidence;
-6. Open Targets — gene/disease/drug evidence;
-7. PubChem — small-molecule compound records.
+5. ChEMBL — target/mechanism evidence;
+6. Open Targets — target/disease/drug evidence;
+7. PubChem — small-molecule identifiers and properties.
 
-The Biomedical Analysis extension can additionally use g:Profiler for enrichment rather than presenting the earlier prototype enrichment calculation as a new statistical method.
+The application does not use the earlier bundled TTD-style pharmaceutical dataset as its pharmaceutical knowledge source.
 
-## Core research components
+## Core implementation
 
-Implemented components include:
+The method contains:
 
-1. typed deterministic query planning for auditable/reproducible task execution;
-2. canonical evidence-state objects with subject, predicate, value, qualifiers, source, record ID/URL, retrieval time, and evidence type;
-3. cross-source drug/entity normalization;
-4. deterministic filter/join/intersection operations rather than delegating structured computation to free-form generation;
-5. explicit evidence-relation classes: agreement, complementary, context difference, and conflict;
-6. claim-level support verification;
-7. provenance traces linked to source records;
+1. typed query planning for supported structured evidence operations;
+2. canonical evidence-state objects containing subject, predicate, value, qualifiers, source, source record identifier/URL, retrieval time, and evidence type;
+3. drug/entity normalization for selected cross-source workflows;
+4. deterministic filtering, joining, counting, and set intersection where the requested task is structured;
+5. explicit source traces recording source, operation, success/failure, latency, result count, and error text;
+6. evidence-relation labeling for agreement, complementary evidence, contextual difference, and conflict;
+7. claim-to-evidence link validation for structured claims;
 8. user-uploaded candidate-drug × live-source joins;
-9. source retry/backoff/failure traces;
-10. controlled source-failure injection for robustness evaluation;
-11. server-side optional model generation while structured live tasks remain independently auditable.
+9. retry/backoff handling for transient source failures;
+10. controlled local fault injection for robustness experiments;
+11. optional server-side model generation for general conversational synthesis and controlled evaluation baselines.
+
+### Important terminology boundary
+
+The current `verify_claims` component validates that a structured claim's referenced evidence identifiers exist in the retrieved evidence state. This is **claim-to-evidence link validation**, not a general semantic entailment verifier. The paper must not describe it as proving semantic truth unless a separate semantic-verification method is implemented and evaluated.
+
+### Failure semantics
+
+A complete source failure must not be interpreted as a valid empty evidence set. The release-candidate hardening includes:
+
+- Open Targets GraphQL `errors` are raised even when the transport status is HTTP 200;
+- Open Targets association ordering follows the current schema contract (`score desc`);
+- complete openFDA fallback failure is propagated to the trace layer rather than returned as `[]`;
+- complete ChEMBL mechanism-service failure is propagated rather than returned as a successful zero;
+- source traces and warnings therefore distinguish retrieval failure from genuine absence of records.
+
+These are software-correctness/source-contract fixes and must be included in Publication Freeze v2 before confirmatory evaluation.
 
 ## LiveBioEvidenceBench-v2.1
 
-The publication benchmark is implemented as a **dynamic task specification**, not a static answer corpus.
+The publication benchmark is a dynamic task specification rather than a static answer corpus.
 
 Default configuration:
 
+- benchmark version: `LiveBioEvidenceBench-v2.1`;
 - 1,500 task states;
 - deterministic seed `1729`;
-- `dev=300`, `test=900`, `stress=300`;
-- easy/medium/hard operation-level difficulty labels;
-- eleven structured task families spanning single-source, cross-source, and uploaded-evidence tasks;
-- task-relevant drug, target, gene, and condition entities isolated across public partitions;
+- public partitions `dev=300`, `test=900`, `stress=300`;
+- entity-disjoint public pools for task-relevant drugs, targets, genes, and conditions;
+- eleven structured task families spanning single-source, cross-source, and uploaded-evidence operations;
 - unique task signatures;
-- SHA-256 benchmark fingerprint and manifest;
-- independent live API oracle that bypasses ChatAlchemy's planner/final reasoning/verifier.
+- SHA-256 benchmark fingerprint and manifest.
 
-Uploaded-data tasks can have the same surface wording with different candidate lists; the unique experimental unit is therefore the complete task state rather than the question string alone.
+The benchmark's public paraphrase structures are controlled and shared across splits. It tests entity/source/evidence-composition generalization, not unrestricted natural-language task discovery. A private independently authored holdout is required for stronger language/generalization claims.
 
-CI sends all 1,500 frozen tasks through the planner and verifies the required route/entities/filters in addition to validating benchmark cardinality and leakage constraints.
+## Direct-source oracle
 
-## Fair live-oracle comparison
+Gold answers are recomputed from public source APIs using an independently executed direct-source oracle that bypasses ChatAlchemy's planner, final deterministic composition path, evidence-relation classifier, and evidence-link validator.
 
-Live biomedical truth can change during an experiment. The evaluation layer therefore supports two controlled designs:
+The oracle is not treated as infallible or perfectly independent ground truth because it necessarily shares public API schemas and source conventions. Therefore source records, timestamps, oracle coverage, and snapshot hashes are retained, and a stratified subset must be manually audited before final submission.
 
-- **same-iteration pairing:** execute the independent oracle once and score every compared system against that result;
-- **frozen oracle snapshot:** create a `LiveBioOracleSnapshot/v1` artifact tied to the benchmark fingerprint and reuse it across separate system/model runs.
+For confirmatory comparison, all systems are scored against one fingerprint-matched `LiveBioOracleSnapshot/v1` so source changes during separate model runs cannot create an unfair comparison.
 
-Snapshot artifacts retain task IDs/signatures, source records, coverage, and hashes. Temporal experiments intentionally create a new snapshot at a later timepoint.
+## Baselines
 
-## Baselines and ablations
+Implemented controlled baselines are:
 
-Implemented controlled baselines:
+- `LLM-only`: GPT-5.6 Sol receives the question without live evidence;
+- `same-retrieval LLM`: GPT-5.6 Sol receives ChatAlchemy's retrieved evidence objects but performs final composition itself;
+- `unrestricted same-tools LLM agent`: GPT-5.6 Sol chooses sequential calls to the same seven live source adapters without using ChatAlchemy's typed planner, normalization logic, deterministic joins, evidence-relation classifier, or evidence-link validator;
+- `ChatAlchemy-full`.
 
-- `LLM-only`: question without live evidence;
-- `same-retrieval LLM`: receives ChatAlchemy's retrieved evidence objects but performs final composition itself;
-- `unrestricted same-tools LLM agent`: independently chooses sequential calls to the same seven live source adapters without using ChatAlchemy's rule planner, normalization, deterministic joins, conflict classifier, or verifier;
-- `ChatAlchemy-full` evaluated alongside each model baseline on the same cases/oracle state.
+The unrestricted same-tools agent receives a 40-step ceiling. Actual tool calls, latency, and model token usage are retained per case.
 
-The unrestricted same-tools agent receives a generous 40-step ceiling so it is not handicapped on multi-candidate cross-source questions. Actual tool calls, model input/output/total tokens, and latency are retained per case and reported as efficiency outcomes.
+## Ablations
 
-Implemented component ablations:
+The pre-specified ablations are:
 
 - no entity normalization;
 - no deterministic cross-source join;
-- no conflict analysis;
-- no claim verifier.
+- no evidence-relation/conflict analysis;
+- no evidence-link validator.
 
-Ablations execute one independent oracle result per case and share it across all variants.
+Ablations share the same case-level oracle state as the full system.
 
-Additional external biomedical-agent baselines can be added only when tool/source coverage is sufficiently comparable; harness/tool-budget differences must be explicitly reported.
-
-## Grounding and robustness protocols
+## Robustness experiments
 
 ### Counterfactual grounding
 
-The counterfactual harness contains 120 deterministic synthetic evaluation cases across:
-
-- mechanism reversal;
-- regulatory-status reversal;
-- target-relation reversal;
-- trial-status reversal.
-
-Each case is run in paired question-only and evidence-constrained conditions. It reports Grounded Obedience Score (GOS), Parametric Memory Intrusion Rate (PMIR), paired GOS gain, and paired PMIR reduction. Synthetic counterfactual records never modify external biomedical APIs.
+The counterfactual harness contains 120 deterministic synthetic cases spanning mechanism, regulatory-status, target-relation, and trial-status reversals. Each is evaluated in question-only and evidence-constrained conditions, reporting Grounded Obedience Score (GOS) and Parametric Memory Intrusion Rate (PMIR).
 
 ### Source failure
 
-The fault-injection harness supports deterministic exception or empty-result faults for each main live source. Each injected run is paired with an unperturbed ChatAlchemy control on the same case and oracle state. It records performance degradation, source-failure trace visibility, qualification/abstention, and unsupported-claim cases.
+The fault-injection harness supports deterministic `exception` and `empty` failures for the main live sources. Each injected run is paired with an unperturbed control on the same case/oracle state. Primary reliability questions include whether failure is visible and whether the system incorrectly turns failure into a verified zero-result answer.
 
-## Dedicated conflict evaluation
+### Evidence relations/conflicts
 
-The repository contains a blinded two-annotator + adjudication format for evidence-pair labeling and an evaluator that reports:
-
-- macro F1;
-- per-class precision/recall/F1;
-- confusion counts;
-- Cohen's kappa between independent annotators.
-
-No conflict-performance claim should be made until the planned manually labeled evidence-pair set has actually been completed.
+The repository contains a two-annotator + adjudication format and evaluator for agreement/complementary/context-difference/conflict labels. No central conflict-performance claim is allowed until the planned manual annotation is completed and macro-F1/per-class metrics/inter-rater agreement are available.
 
 ## External holdout
 
-The repository provides a strict private-holdout schema/loader and runner. The holdout content itself is intentionally not committed.
+The repository contains a strict loader/freezer/runner for a private holdout. The content itself is intentionally not committed.
 
-After system freeze, approximately 300 independently authored questions should be created by a biomedical researcher who did not implement the planner. The holdout is fingerprinted before evaluation, contains operation/source metadata but no frozen time-sensitive answers, and is evaluated with a shared independent live oracle result per case.
+After Freeze v2, approximately 200–300 questions should be independently authored by a biomedical researcher who did not implement the planner. The set is fingerprinted before one-time evaluation and must not be used for tuning.
 
-## Temporal evaluation
+## Human evaluation
 
-The system can create/merge sharded oracle snapshots and compare repeated source states. A temporal result is scored only when the independent oracle demonstrates that the supported answer actually changed. Source outages/schema errors are tracked separately from genuine semantic drift.
+A blinded expert-evaluation protocol and CSV template are included for a 150–200-answer study with 2–3 independent biomedical reviewers. Planned dimensions are factual correctness, evidence grounding, completeness, appropriate uncertainty, scientific usefulness, and usefulness as a research starting point.
 
-## Statistical analysis
+These ratings must come from real reviewers; they are not generated by the implementation pipeline.
 
-Implemented analysis utilities include:
+## Statistical implementation
 
-- paired bootstrap confidence intervals for per-case score differences;
-- exact McNemar test for paired binary outcomes;
-- Holm-Bonferroni correction for planned multiple comparisons;
-- case-ID aligned result comparison.
+Implemented utilities include:
 
-The primary paper endpoint is pre-specified as mean task score on the public `test` split. Reliability measures include oracle coverage, execution success, claim coverage/support, and provenance record F1. Stress-set performance is reported separately rather than silently pooled into the primary endpoint.
+- paired bootstrap confidence intervals;
+- exact McNemar tests;
+- Holm-Bonferroni correction;
+- case-ID-aligned paired comparison;
+- common-case analysis support;
+- latency/tool/token/cost reporting from saved artifacts.
+
+The primary endpoint is mean task score on public `test`. The `stress` split is reported separately.
 
 ## Reproducible experiment execution
 
-The manual `ChatAlchemy Paper Experiments` GitHub Actions workflow supports:
+Two manual-only workflows are retained:
 
-- full main benchmark;
-- paired ablations;
-- LLM-only baseline;
-- same-retrieval LLM baseline;
-- unrestricted same-tools LLM agent baseline;
-- source-failure injection;
-- counterfactual grounding.
+- `ChatAlchemy Paper Experiments` for targeted experiments and diagnostics;
+- `ChatAlchemy Frozen Primary Campaign` for the complete confirmatory oracle → system → baselines → ablations → paper-table pipeline.
 
-The full benchmark is deterministically split into ten shards. The merger rejects benchmark-fingerprint mismatch, run-configuration mismatch, missing/unexpected shard indexes, and duplicate task IDs before producing an aggregate artifact.
+The frozen primary campaign:
 
-Model baselines require a server-side `OPENAI_API_KEY`; no credential is stored in source code. The Responses API usage fields are recorded per model call so input, output, and total token consumption can be measured from actual runs rather than estimated afterward.
+- captures one sharded live oracle snapshot;
+- merges and validates that snapshot;
+- evaluates ChatAlchemy and model baselines against the same snapshot;
+- executes paired ablations;
+- merges shards only after configuration/fingerprint checks;
+- generates tables/statistics from saved artifacts.
 
-## Automated publication gates
+The default confirmatory model is GPT-5.6 Sol.
 
-The standard CI now checks:
+## Software/release controls
 
-- backend unit/mocked integration tests;
-- the publication artifact/security gate;
-- benchmark generation and manifest validation;
-- 1,500 unique benchmark task states;
-- exact 300/900/300 public split sizes;
-- split entity isolation;
-- all 1,500 benchmark questions against planner route/entity/filter expectations;
-- strict frontend TypeScript checking;
-- production frontend build;
-- production dependency audit;
+The release candidate includes:
+
+- server-side provider credentials only;
+- bounded request and file sizes;
+- API no-store caching;
+- Vercel security/privacy headers;
+- explicit model-unavailable responses;
+- exact deployment commit/branch/environment in `/api/health`;
+- pinned Python dependencies;
+- production frontend dependency audit and strict TypeScript build;
 - live source contract tests;
-- a live benchmark smoke drawn from the frozen publication benchmark IDs.
-
-The publication gate also rejects browser-side OpenAI credential patterns, a committed `ChatAlchemy/.env`, and reintroduction of the old bundled TTD pharmaceutical data file.
-
-## Human evaluation assets
-
-A blinded expert-evaluation protocol and CSV template are included for a future 150-200 answer study with 2-3 independent biomedical reviewers. Planned dimensions are factual correctness, evidence grounding, completeness, appropriate uncertainty, scientific usefulness, and usefulness as a research starting point.
-
-These ratings must be collected from real reviewers; they are not generated by the implementation pipeline.
+- disease→gene Open Targets regression coverage;
+- publication artifact/security/leakage gates.
 
 ## What is implemented versus what is measured
 
-The **experimental infrastructure is implemented**. Publication-scale performance claims are **not yet complete** until the corresponding experiment artifacts exist.
+The system and experimental infrastructure are implemented. **Publication-scale empirical claims are not complete until the required artifacts are actually collected.**
 
-Still requiring actual collection:
+Still requiring real execution/collection after Freeze v2:
 
-- frozen full public test/stress benchmark results;
-- LLM-only, same-retrieval, and unrestricted same-tools agent runs using configured model credentials;
-- any additional fair external biomedical-agent baseline;
-- private independently authored external holdout;
-- 300-500 manually annotated conflict/context evidence pairs with two raters and adjudication;
-- repeated real temporal timepoints;
-- execution of the 120-case counterfactual model experiment;
-- 150-200 blinded expert-evaluation answers with 2-3 reviewers;
-- final statistical analysis/tables/figures from the frozen artifacts.
+- full `test` run (`n=900`);
+- full `stress` run (`n=300`);
+- LLM-only baseline;
+- same-retrieval LLM baseline;
+- unrestricted same-tools agent baseline;
+- full ablation campaign;
+- entity-normalization experiment;
+- failure-injection experiment;
+- 120-case counterfactual model experiment;
+- private independently authored holdout;
+- manual evidence-relation annotation if retained as a central claim;
+- 150–200-answer blinded expert evaluation;
+- final statistics/tables/figures generated from frozen artifacts.
 
-These are empirical data-collection steps. They must not be fabricated or described as completed simply because the runner exists.
+None of these may be described as completed merely because the runner exists.

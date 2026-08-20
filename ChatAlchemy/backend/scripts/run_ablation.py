@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import statistics
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,10 +22,21 @@ VARIANTS = {
 }
 
 
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * q))))
+    return ordered[index]
+
+
 def _aggregate(rows: list[dict]) -> dict:
     scored = [float(row["task_score"]) for row in rows if row.get("task_score") is not None]
     claimed = [row for row in rows if int(row.get("claim_count", 0)) > 0]
     provenance = [float(row["provenance_record_f1"]) for row in rows if row.get("provenance_record_f1") is not None]
+    system_latency = [float(row.get("latency_ms", 0.0)) for row in rows]
+    source_latency = [float(row.get("source_latency_ms", 0.0)) for row in rows]
+    oracle_latency = [float(row.get("oracle_latency_ms", 0.0)) for row in rows]
     return {
         "n": len(rows),
         "oracle_coverage": statistics.mean(bool(row["oracle_available"]) for row in rows) if rows else 0.0,
@@ -33,6 +45,11 @@ def _aggregate(rows: list[dict]) -> dict:
         "claiming_rate": len(claimed) / len(rows) if rows else 0.0,
         "mean_supported_claim_rate_on_claimed": statistics.mean(float(row["supported_claim_rate"]) for row in claimed) if claimed else None,
         "mean_provenance_record_f1": statistics.mean(provenance) if provenance else None,
+        "median_latency_ms": statistics.median(system_latency) if system_latency else 0.0,
+        "p95_latency_ms": _percentile(system_latency, 0.95),
+        "median_source_latency_ms": statistics.median(source_latency) if source_latency else 0.0,
+        "p95_source_latency_ms": _percentile(source_latency, 0.95),
+        "median_oracle_latency_ms": statistics.median(oracle_latency) if oracle_latency else 0.0,
     }
 
 
@@ -72,9 +89,14 @@ async def main() -> None:
     started = datetime.now(timezone.utc)
     try:
         for case in cases:
+            oracle_started = time.perf_counter()
             gold, oracle_error = await oracle.get(case)
+            oracle_latency_ms = (time.perf_counter() - oracle_started) * 1000
             for name, engine in engines.items():
+                system_started = time.perf_counter()
                 response = await engine.answer(case.question, max_results=args.max_results, user_evidence=user_evidence(case))
+                system_latency_ms = (time.perf_counter() - system_started) * 1000
+                source_latency_ms = sum(float(trace.latency_ms) for trace in response.traces)
                 pred = prediction(case, response)
                 score = score_value(gold.kind, pred, gold.value) if gold is not None else None
                 oracle_records = gold.source_records if gold is not None else []
@@ -99,6 +121,10 @@ async def main() -> None:
                         "claim_count": len(response.claims),
                         "evidence_count": len(response.evidence),
                         "api_calls": len(response.traces),
+                        "latency_ms": system_latency_ms,
+                        "system_latency_ms": system_latency_ms,
+                        "source_latency_ms": source_latency_ms,
+                        "oracle_latency_ms": oracle_latency_ms,
                         "provenance_record_f1": provenance_record_f1(oracle_records, agent_records) if gold is not None else None,
                     }
                 )
@@ -122,7 +148,7 @@ async def main() -> None:
         )
 
     result = {
-        "schema": "ChatAlchemyAblationRun/v3",
+        "schema": "ChatAlchemyAblationRun/v4",
         "run": {
             "started_at_utc": started.isoformat(),
             "finished_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -135,6 +161,7 @@ async def main() -> None:
             "shard_index": args.shard_index,
             "max_results": args.max_results,
             "variants": args.variants,
+            "latency_definition": "per-variant system wall-clock only; oracle lookup excluded and source latency reported separately",
             **oracle.metadata(),
             "oracle_snapshot_policy": "one oracle result per case shared across all variants",
         },

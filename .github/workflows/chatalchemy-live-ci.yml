@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - 'agent/**'
   pull_request:
   workflow_dispatch:
 
@@ -64,12 +63,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install
+          cache: npm
+          cache-dependency-path: ChatAlchemy/package-lock.json
+      - name: Install committed frontend dependency graph
+        run: npm ci
       - name: Production dependency audit
         run: npm audit --omit=dev --audit-level=high
       - name: Strict TypeScript check
         run: npm run typecheck
-      - run: npm run build
+      - name: Production frontend build
+        run: npm run build
 
   live-contracts:
     needs: [backend-unit, frontend-build]

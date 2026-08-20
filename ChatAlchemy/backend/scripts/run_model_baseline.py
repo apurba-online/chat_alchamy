@@ -14,10 +14,11 @@ from chatalchemy.benchmark import EvaluationOracle, generate_cases, score_value,
 from chatalchemy.evaluation import UnrestrictedToolAgent
 from chatalchemy.llm import LLMClient
 from chatalchemy.reasoning import ChatAlchemyEngine
+from chatalchemy.sources.base import _safe_error
 from scripts.run_live_benchmark import prediction as chatalchemy_prediction
-from scripts.run_live_benchmark import user_evidence
+from scripts.run_live_benchmark import provenance_record_f1, user_evidence
 
-PROMPT_VERSION = "model-baseline-v4"
+PROMPT_VERSION = "model-baseline-v6"
 PUBLIC_BENCHMARK_N = 1500
 
 
@@ -96,9 +97,25 @@ def _evidence_payload(response) -> list[dict[str, Any]]:
     ]
 
 
+def _records_from_evidence_payload(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    return [
+        {"source": item.get("source"), "record": item.get("source_record_id")}
+        for item in (items or [])
+        if item.get("source_record_id") is not None
+    ]
+
+
 def _add_usage(total: dict[str, int], usage: dict[str, int]) -> None:
     for key in ("input_tokens", "output_tokens", "total_tokens"):
         total[key] = total.get(key, 0) + int(usage.get(key, 0))
+
+
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * q))))
+    return ordered[index]
 
 
 def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -109,19 +126,40 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for row in rows
         if row.get("chatalchemy_task_score") is not None and row.get("task_score") is not None
     ]
+    baseline_latency = [float(row.get("baseline_latency_ms", 0.0)) for row in rows]
+    model_latency = [float(row.get("baseline_model_latency_ms", 0.0)) for row in rows]
+    retrieval_latency = [float(row.get("baseline_retrieval_latency_ms", 0.0)) for row in rows]
+    chatalchemy_latency = [float(row.get("chatalchemy_latency_ms", 0.0)) for row in rows]
+    oracle_latency = [float(row.get("oracle_latency_ms", 0.0)) for row in rows]
+    provenance = [
+        float(row["provenance_record_f1"])
+        for row in rows
+        if row.get("provenance_record_f1") is not None
+    ]
     return {
         "n": len(rows),
-        "oracle_coverage": statistics.mean(bool(row["oracle_available"]) for row in rows) if rows else 0.0,
+        "oracle_coverage": statistics.mean(bool(row.get("oracle_available")) for row in rows) if rows else 0.0,
         "baseline_mean_task_score": statistics.mean(baseline) if baseline else None,
         "chatalchemy_mean_task_score": statistics.mean(full) if full else None,
         "paired_n": len(paired),
         "paired_mean_chatalchemy_minus_baseline": statistics.mean(a - b for a, b in paired) if paired else None,
-        "median_baseline_latency_ms": statistics.median(float(row["baseline_latency_ms"]) for row in rows) if rows else 0.0,
+        "execution_success": statistics.mean(bool(row.get("execution_success", not row.get("model_error") and not row.get("retrieval_error"))) for row in rows) if rows else 0.0,
+        "mean_provenance_record_f1": statistics.mean(provenance) if provenance else None,
+        "median_baseline_latency_ms": statistics.median(baseline_latency) if baseline_latency else 0.0,
+        "p95_baseline_latency_ms": _percentile(baseline_latency, 0.95),
+        "median_baseline_model_latency_ms": statistics.median(model_latency) if model_latency else 0.0,
+        "p95_baseline_model_latency_ms": _percentile(model_latency, 0.95),
+        "median_baseline_retrieval_latency_ms": statistics.median(retrieval_latency) if retrieval_latency else 0.0,
+        "p95_baseline_retrieval_latency_ms": _percentile(retrieval_latency, 0.95),
+        "median_chatalchemy_latency_ms": statistics.median(chatalchemy_latency) if chatalchemy_latency else 0.0,
+        "p95_chatalchemy_latency_ms": _percentile(chatalchemy_latency, 0.95),
+        "median_oracle_latency_ms": statistics.median(oracle_latency) if oracle_latency else 0.0,
         "model_error_rate": statistics.mean(bool(row.get("model_error")) for row in rows) if rows else 0.0,
         "retrieval_error_rate": statistics.mean(bool(row.get("retrieval_error")) for row in rows) if rows else 0.0,
-        "mean_model_input_tokens": statistics.mean(int(row["model_usage"].get("input_tokens", 0)) for row in rows) if rows else 0.0,
-        "mean_model_output_tokens": statistics.mean(int(row["model_usage"].get("output_tokens", 0)) for row in rows) if rows else 0.0,
-        "mean_model_total_tokens": statistics.mean(int(row["model_usage"].get("total_tokens", 0)) for row in rows) if rows else 0.0,
+        "mean_api_calls": statistics.mean(int(row.get("api_calls", 0)) for row in rows) if rows else 0.0,
+        "mean_model_input_tokens": statistics.mean(int((row.get("model_usage") or {}).get("input_tokens", 0)) for row in rows) if rows else 0.0,
+        "mean_model_output_tokens": statistics.mean(int((row.get("model_usage") or {}).get("output_tokens", 0)) for row in rows) if rows else 0.0,
+        "mean_model_total_tokens": statistics.mean(int((row.get("model_usage") or {}).get("total_tokens", 0)) for row in rows) if rows else 0.0,
         "mean_tool_calls": statistics.mean(int(row.get("tool_call_count", 0)) for row in rows) if rows else 0.0,
     }
 
@@ -137,7 +175,7 @@ async def main() -> None:
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--max-results", type=int, default=20)
-    parser.add_argument("--max-tool-steps", type=int, default=40, help="Generous ceiling matched to the order of work in ChatAlchemy's hardest cross-source path")
+    parser.add_argument("--max-tool-steps", type=int, default=40)
     parser.add_argument("--oracle-snapshot", default=None)
     parser.add_argument("--out", default="benchmark/model-baseline.json")
     args = parser.parse_args()
@@ -160,61 +198,78 @@ async def main() -> None:
     if not cases:
         raise SystemExit("No cases matched the requested filters")
 
-    oracle = EvaluationOracle(
-        benchmark_fingerprint=manifest["fingerprint_sha256"],
-        snapshot_path=args.oracle_snapshot,
-    )
+    oracle = EvaluationOracle(benchmark_fingerprint=manifest["fingerprint_sha256"], snapshot_path=args.oracle_snapshot)
     engine = ChatAlchemyEngine()
     tool_source_engine = ChatAlchemyEngine() if args.mode == "unrestricted_tool_agent" else None
     tool_agent = (
         UnrestrictedToolAgent(llm, tool_source_engine.sources, max_steps=args.max_tool_steps, max_results=args.max_results)
-        if tool_source_engine is not None
-        else None
+        if tool_source_engine is not None else None
     )
     rows: list[dict[str, Any]] = []
     started = datetime.now(timezone.utc)
     try:
         for case in cases:
-            case_started = time.perf_counter()
+            audit_started = time.perf_counter()
+            oracle_started = time.perf_counter()
             gold, oracle_error = await oracle.get(case)
+            oracle_latency_ms = (time.perf_counter() - oracle_started) * 1000
 
-            retrieval_error = None
+            full_started = time.perf_counter()
+            reference_error = None
             full_response = None
             try:
-                full_response = await engine.answer(
-                    case.question,
-                    max_results=args.max_results,
-                    user_evidence=user_evidence(case),
-                )
+                full_response = await engine.answer(case.question, max_results=args.max_results, user_evidence=user_evidence(case))
             except Exception as exc:
-                retrieval_error = f"{type(exc).__name__}: {exc}"
-
+                reference_error = _safe_error(exc)
+            chatalchemy_latency_ms = (time.perf_counter() - full_started) * 1000
+            chatalchemy_source_latency_ms = sum(float(trace.latency_ms) for trace in full_response.traces) if full_response is not None else 0.0
             full_pred = chatalchemy_prediction(case, full_response) if full_response is not None else None
             full_score = score_value(gold.kind, full_pred, gold.value) if gold is not None and full_pred is not None else None
 
-            evidence = None
+            evidence: list[dict[str, Any]] | None = None
+            baseline_records: list[dict[str, Any]] = []
             tool_trace: list[dict[str, Any]] = []
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            baseline_retrieval_latency_ms = 0.0
+            retrieval_error = None
+            api_calls = 0
+
             if args.mode == "same_retrieval_llm":
                 evidence = _evidence_payload(full_response) if full_response is not None else []
+                baseline_records = _records_from_evidence_payload(evidence)
+                baseline_retrieval_latency_ms = chatalchemy_latency_ms
+                api_calls = len(full_response.traces) if full_response is not None else 0
+                if reference_error:
+                    retrieval_error = reference_error
+                elif full_response is not None and any(not trace.ok for trace in full_response.traces):
+                    retrieval_error = "ChatAlchemy evidence preparation contained a failed source trace"
             elif args.mode == "unrestricted_tool_agent":
                 assert tool_agent is not None
+                retrieval_started = time.perf_counter()
                 try:
                     retrieval = await tool_agent.retrieve(
                         case.question,
                         uploaded_candidates=case.params.get("candidates") if case.family.startswith("user_") else None,
                     )
                     evidence = UnrestrictedToolAgent._evidence_payload(retrieval["evidence"])
+                    baseline_records = _records_from_evidence_payload(evidence)
                     tool_trace = retrieval["trace"]
                     _add_usage(usage, retrieval["usage"])
+                    if any(not bool(step.get("ok")) for step in tool_trace):
+                        retrieval_error = "one or more unrestricted tool calls failed"
                 except Exception as exc:
-                    retrieval_error = f"{type(exc).__name__}: {exc}"
+                    retrieval_error = _safe_error(exc)
                     evidence = []
+                baseline_retrieval_latency_ms = (time.perf_counter() - retrieval_started) * 1000
+                api_calls = sum(
+                    not step.get("decision", {}).get("done", False)
+                    and step.get("decision", {}).get("tool") != "none"
+                    for step in tool_trace
+                )
 
             instructions = (
-                "You are being evaluated on biomedical evidence reasoning. "
-                "Return only the requested JSON fields. Do not explain your answer. "
-                + _task_format(case)
+                "You are being evaluated on biomedical evidence reasoning. Return only the requested JSON fields. "
+                "Do not explain your answer. " + _task_format(case)
             )
             if args.mode in {"same_retrieval_llm", "unrestricted_tool_agent"}:
                 instructions += " Use only the supplied retrieved evidence and uploaded candidates; do not invent source records."
@@ -229,45 +284,53 @@ async def main() -> None:
             raw_output: dict[str, Any] = {}
             model_started = time.perf_counter()
             try:
-                raw_output = await llm.json(
-                    instructions,
-                    json.dumps(model_input, default=str),
-                    "benchmark_answer",
-                    _schema(case),
-                )
+                raw_output = await llm.json(instructions, json.dumps(model_input, default=str), "benchmark_answer", _schema(case))
                 _add_usage(usage, llm.last_usage)
             except Exception as exc:
-                model_error = f"{type(exc).__name__}: {exc}"
-            baseline_latency = (time.perf_counter() - model_started) * 1000
+                model_error = _safe_error(exc)
+            baseline_model_latency_ms = (time.perf_counter() - model_started) * 1000
+            baseline_latency_ms = baseline_retrieval_latency_ms + baseline_model_latency_ms
 
             pred = _prediction(case, raw_output) if not model_error else None
             score = score_value(gold.kind, pred, gold.value) if gold is not None and pred is not None else None
-            rows.append(
-                {
-                    "id": case.id,
-                    "task_signature": case.task_signature,
-                    "split": case.split,
-                    "difficulty": case.difficulty,
-                    "family": case.family,
-                    "question": case.question,
-                    "task_score": score,
-                    "chatalchemy_task_score": full_score,
-                    "oracle_available": gold is not None,
-                    "oracle_error": oracle_error,
-                    "oracle": gold.value if gold is not None else None,
-                    "prediction": pred,
-                    "chatalchemy_prediction": full_pred,
-                    "model_output": raw_output,
-                    "model_error": model_error,
-                    "retrieval_error": retrieval_error,
-                    "evidence_count": len(evidence or []),
-                    "tool_call_count": sum(not step.get("decision", {}).get("done", False) and step.get("decision", {}).get("tool") != "none" for step in tool_trace),
-                    "tool_trace": tool_trace,
-                    "model_usage": usage,
-                    "baseline_latency_ms": baseline_latency,
-                    "total_case_latency_ms": (time.perf_counter() - case_started) * 1000,
-                }
-            )
+            oracle_records = gold.source_records if gold is not None else []
+            baseline_provenance_f1 = provenance_record_f1(oracle_records, baseline_records) if gold is not None else None
+            execution_success = not model_error and not retrieval_error
+            tool_call_count = api_calls if args.mode == "unrestricted_tool_agent" else 0
+
+            rows.append({
+                "id": case.id,
+                "task_signature": case.task_signature,
+                "split": case.split,
+                "difficulty": case.difficulty,
+                "family": case.family,
+                "question": case.question,
+                "task_score": score,
+                "chatalchemy_task_score": full_score,
+                "oracle_available": gold is not None,
+                "oracle_error": oracle_error,
+                "oracle": gold.value if gold is not None else None,
+                "prediction": pred,
+                "chatalchemy_prediction": full_pred,
+                "model_output": raw_output,
+                "model_error": model_error,
+                "retrieval_error": retrieval_error,
+                "reference_error": reference_error,
+                "execution_success": execution_success,
+                "provenance_record_f1": baseline_provenance_f1,
+                "evidence_count": len(evidence or []),
+                "api_calls": api_calls,
+                "tool_call_count": tool_call_count,
+                "tool_trace": tool_trace,
+                "model_usage": usage,
+                "oracle_latency_ms": oracle_latency_ms,
+                "chatalchemy_latency_ms": chatalchemy_latency_ms,
+                "chatalchemy_source_latency_ms": chatalchemy_source_latency_ms,
+                "baseline_retrieval_latency_ms": baseline_retrieval_latency_ms,
+                "baseline_model_latency_ms": baseline_model_latency_ms,
+                "baseline_latency_ms": baseline_latency_ms,
+                "audit_case_latency_ms": (time.perf_counter() - audit_started) * 1000,
+            })
     finally:
         await oracle.close()
         await llm.close()
@@ -276,12 +339,9 @@ async def main() -> None:
             await tool_source_engine.close()
 
     finished = datetime.now(timezone.utc)
-    by_family = {
-        family: _aggregate([row for row in rows if row["family"] == family])
-        for family in sorted({row["family"] for row in rows})
-    }
+    by_family = {family: _aggregate([row for row in rows if row["family"] == family]) for family in sorted({row["family"] for row in rows})}
     result = {
-        "schema": "ChatAlchemyModelBaselineRun/v4",
+        "schema": "ChatAlchemyModelBaselineRun/v6",
         "run": {
             "mode": args.mode,
             "model": args.model,
@@ -297,6 +357,9 @@ async def main() -> None:
             "started_at_utc": started.isoformat(),
             "finished_at_utc": finished.isoformat(),
             "git_sha": os.getenv("GITHUB_SHA"),
+            "latency_definition": "baseline latency = retrieval/tool-selection + final model generation; oracle and paired ChatAlchemy reference excluded",
+            "same_retrieval_latency_note": "same-retrieval evidence preparation uses ChatAlchemy evidence-pipeline wall-clock and is therefore conservative",
+            "provenance_definition": "retrieved source-record F1 against the direct-source oracle trace; LLM-only has no retrieved records by design",
             **oracle.metadata(),
         },
         "benchmark": {**manifest, "seed": args.seed},

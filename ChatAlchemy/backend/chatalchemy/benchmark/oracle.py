@@ -18,14 +18,20 @@ class OracleResult:
 
 
 class LiveOracle:
-    """Independent query-time oracle using direct public API calls only."""
+    """Direct query-time oracle using public biomedical APIs only.
+
+    The publication entry point uses `direct_oracle.LiveOracle`, which subclasses
+    this implementation to harden selected source contracts while remaining
+    independent of ChatAlchemy's planner, evidence model, deterministic result
+    composition, relation classifier, and evidence-link validator.
+    """
 
     def __init__(self):
         self.client = httpx.AsyncClient(
             timeout=25,
             follow_redirects=True,
             headers={
-                "User-Agent": "LiveBioEvidenceBench/1.0 (+https://github.com/apurba-online/chat_alchamy)",
+                "User-Agent": "LiveBioEvidenceBench/2.1 (+https://github.com/apurba-online/chat_alchamy)",
                 "Accept": "application/json",
                 "Cache-Control": "no-cache",
             },
@@ -68,6 +74,7 @@ class LiveOracle:
         }
 
     async def _identity(self, drug: str):
+        """Legacy/base identity implementation; hardened by direct_oracle subclass."""
         base = "https://rxnav.nlm.nih.gov/REST"
         ids: list[str] = []
         try:
@@ -76,8 +83,15 @@ class LiveOracle:
         except Exception:
             pass
         if not ids:
-            data = await self._get(f"{base}/approximateTerm.json", {"term": drug, "maxEntries": 8, "option": 1})
-            ids = [str(c.get("rxcui")) for c in (data.get("approximateGroup") or {}).get("candidate", []) or [] if c.get("rxcui")]
+            data = await self._get(
+                f"{base}/approximateTerm.json",
+                {"term": drug, "maxEntries": 8, "option": 1},
+            )
+            ids = [
+                str(candidate.get("rxcui"))
+                for candidate in (data.get("approximateGroup") or {}).get("candidate", []) or []
+                if candidate.get("rxcui")
+            ]
         ranked: list[tuple[int, dict[str, Any]]] = []
         for rid in ids[:8]:
             try:
@@ -93,10 +107,18 @@ class LiveOracle:
         if ranked[0][0] >= 9:
             for tty in ("IN", "PIN", "MIN"):
                 try:
-                    related = await self._get(f"{base}/rxcui/{best['rxcui']}/related.json", {"tty": tty}, attempts=1)
+                    related = await self._get(
+                        f"{base}/rxcui/{best['rxcui']}/related.json",
+                        {"tty": tty},
+                        attempts=1,
+                    )
                 except Exception:
                     continue
-                concepts = [cp for group in (related.get("relatedGroup") or {}).get("conceptGroup", []) or [] for cp in group.get("conceptProperties") or []]
+                concepts = [
+                    concept
+                    for group in (related.get("relatedGroup") or {}).get("conceptGroup", []) or []
+                    for concept in group.get("conceptProperties") or []
+                ]
                 if concepts:
                     best = concepts[0]
                     break
@@ -104,17 +126,35 @@ class LiveOracle:
         return str(best.get("name") or drug).lower(), [self._record("RxNorm", rid)]
 
     async def _labels(self, drug: str, limit: int = 20):
-        data = await self._get("https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json", {"drug_name": drug, "pagesize": limit})
+        data = await self._get(
+            "https://dailymed.nlm.nih.gov/dailymed/services/v2/spls.json",
+            {"drug_name": drug, "pagesize": min(limit, 100)},
+        )
         rows = data.get("data") or []
-        ids = sorted({str(row.get("setid") or row.get("set_id")) for row in rows if row.get("setid") or row.get("set_id")})
+        ids = sorted(
+            {
+                str(row.get("setid") or row.get("set_id"))
+                for row in rows
+                if row.get("setid") or row.get("set_id")
+            }
+        )[:limit]
         return ids, [self._record("DailyMed", record) for record in ids]
 
     async def _approvals(self, drug: str, limit: int = 20):
+        """Legacy/base approvals implementation; hardened by direct_oracle subclass."""
         endpoint = "https://api.fda.gov/drug/drugsfda.json"
         payload = None
-        for search in [f'openfda.generic_name:"{drug}"', f'openfda.brand_name:"{drug}"', f'products.active_ingredients.name:"{drug}"']:
+        for search in [
+            f'openfda.generic_name:"{drug}"',
+            f'openfda.brand_name:"{drug}"',
+            f'products.active_ingredients.name:"{drug}"',
+        ]:
             try:
-                candidate = await self._get(endpoint, {"search": search, "limit": min(limit, 100)}, attempts=1)
+                candidate = await self._get(
+                    endpoint,
+                    {"search": search, "limit": min(limit, 100)},
+                    attempts=1,
+                )
                 if candidate.get("results"):
                     payload = candidate
                     break
@@ -124,39 +164,123 @@ class LiveOracle:
         apps = sorted({str(row.get("application_number")) for row in rows if row.get("application_number")})
         return apps, [self._record("Drugs@FDA/openFDA", record) for record in apps]
 
-    async def _trials(self, drug: str | None, condition: str | None, phase: str | None, status: str | None, limit: int = 20):
-        params: dict[str, Any] = {"pageSize": min(limit * 3, 100)}
+    @staticmethod
+    def _trial_params(
+        drug: str | None,
+        condition: str | None,
+        phase: str | None,
+        status: str | None,
+        page_size: int,
+        page_token: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "pageSize": min(max(page_size, 1), 100),
+            "format": "json",
+        }
         if drug:
             params["query.intr"] = drug
         if condition:
             params["query.cond"] = condition
-        data = await self._get("https://clinicaltrials.gov/api/v2/studies", params)
+        if status:
+            params["filter.overallStatus"] = status
+        if phase:
+            params["filter.advanced"] = f"AREA[Phase]{phase}"
+        if page_token:
+            params["pageToken"] = page_token
+        return params
+
+    async def _trials(
+        self,
+        drug: str | None,
+        condition: str | None,
+        phase: str | None,
+        status: str | None,
+        limit: int = 20,
+    ):
+        """Retrieve filtered trial IDs without filtering only a truncated page.
+
+        Status and phase constraints are sent to API v2 before pagination and are
+        rechecked locally. This avoids an oracle false-empty result when the first
+        unfiltered page happens not to contain a requested phase/status.
+        """
+        endpoint = "https://clinicaltrials.gov/api/v2/studies"
         ids: list[str] = []
-        for study in data.get("studies") or []:
-            protocol = study.get("protocolSection") or {}
-            ident = protocol.get("identificationModule") or {}
-            design = protocol.get("designModule") or {}
-            status_mod = protocol.get("statusModule") or {}
-            phases = design.get("phases") or []
-            overall = status_mod.get("overallStatus")
-            if phase and phase not in phases:
-                continue
-            if status and status != overall:
-                continue
-            if ident.get("nctId"):
-                ids.append(str(ident["nctId"]))
-            if len(ids) >= limit:
+        seen: set[str] = set()
+        page_token: str | None = None
+
+        for _ in range(5):
+            remaining = limit - len(ids)
+            if remaining <= 0:
                 break
-        ids = sorted(set(ids))
+            params = self._trial_params(
+                drug,
+                condition,
+                phase,
+                status,
+                page_size=min(max(remaining, 20), 100),
+                page_token=page_token,
+            )
+            try:
+                data = await self._get(endpoint, params)
+            except Exception as primary:
+                terms = [value for value in (drug, condition) if value]
+                if not terms:
+                    raise primary
+                fallback: dict[str, Any] = {
+                    "pageSize": params["pageSize"],
+                    "format": "json",
+                    "query.term": " AND ".join(terms),
+                }
+                if status:
+                    fallback["filter.overallStatus"] = status
+                if phase:
+                    fallback["filter.advanced"] = f"AREA[Phase]{phase}"
+                if page_token:
+                    fallback["pageToken"] = page_token
+                data = await self._get(endpoint, fallback)
+
+            for study in data.get("studies") or []:
+                protocol = study.get("protocolSection") or {}
+                ident = protocol.get("identificationModule") or {}
+                design = protocol.get("designModule") or {}
+                status_mod = protocol.get("statusModule") or {}
+                phases = design.get("phases") or []
+                overall = status_mod.get("overallStatus")
+                nct = ident.get("nctId")
+                if phase and phase not in phases:
+                    continue
+                if status and status != overall:
+                    continue
+                if nct and str(nct) not in seen:
+                    seen.add(str(nct))
+                    ids.append(str(nct))
+                if len(ids) >= limit:
+                    break
+
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+
+        ids = sorted(ids)
         return ids, [self._record("ClinicalTrials.gov", record) for record in ids]
 
     async def _target_drugs(self, target: str, limit: int = 20):
+        """Legacy/base target implementation; hardened by direct_oracle subclass."""
         base = "https://www.ebi.ac.uk/chembl/api/data"
-        targets = (await self._get(f"{base}/target/search.json", {"q": target, "limit": 10})).get("targets") or []
+        targets = (
+            await self._get(f"{base}/target/search.json", {"q": target, "limit": 10})
+        ).get("targets") or []
 
         def score(row):
-            text = " ".join(str(row.get(key, "")) for key in ["pref_name", "target_chembl_id", "organism", "target_type"]).upper()
-            return (10 if target.upper() in text else 0) + (5 if row.get("organism") == "Homo sapiens" else 0) + (3 if row.get("target_type") == "SINGLE PROTEIN" else 0)
+            text = " ".join(
+                str(row.get(key, ""))
+                for key in ["pref_name", "target_chembl_id", "organism", "target_type"]
+            ).upper()
+            return (
+                (10 if target.upper() in text else 0)
+                + (5 if row.get("organism") == "Homo sapiens" else 0)
+                + (3 if row.get("target_type") == "SINGLE PROTEIN" else 0)
+            )
 
         mechanisms: list[dict[str, Any]] = []
         for item in sorted(targets, key=score, reverse=True)[:6]:
@@ -164,11 +288,21 @@ class LiveOracle:
             if not target_id:
                 continue
             try:
-                payload = await self._get(f"{base}/mechanism.json", {"target_chembl_id": target_id, "limit": 50}, attempts=1)
+                payload = await self._get(
+                    f"{base}/mechanism.json",
+                    {"target_chembl_id": target_id, "limit": 50},
+                    attempts=1,
+                )
             except Exception:
                 continue
             mechanisms.extend(payload.get("mechanisms") or [])
-        molecule_ids = list(dict.fromkeys(str(m.get("molecule_chembl_id")) for m in mechanisms if m.get("molecule_chembl_id")))[:limit]
+        molecule_ids = list(
+            dict.fromkeys(
+                str(mechanism.get("molecule_chembl_id"))
+                for mechanism in mechanisms
+                if mechanism.get("molecule_chembl_id")
+            )
+        )[:limit]
 
         async def fetch(mid: str):
             try:
@@ -181,8 +315,15 @@ class LiveOracle:
         return sorted(set(names)), [self._record("ChEMBL", mid) for mid in molecule_ids]
 
     async def _ot_search_id(self, query_text: str, entity: str) -> str | None:
+        """Legacy/base search; hardened by direct_oracle subclass."""
         endpoint = "https://api.platform.opentargets.org/api/v4/graphql"
-        query = '''query Search($q: String!, $entities: [String!]) { search(queryString: $q, entityNames: $entities, page: {index: 0, size: 5}) { hits { id entity name description } } }'''
+        query = '''
+        query Search($q: String!, $entities: [String!]) {
+          search(queryString: $q, entityNames: $entities, page: {index: 0, size: 5}) {
+            hits { id entity name description }
+          }
+        }
+        '''
         payload = await self._post(endpoint, query, {"q": query_text, "entities": [entity]})
         hits = (((payload.get("data") or {}).get("search") or {}).get("hits") or [])
         return str(hits[0].get("id")) if hits and hits[0].get("id") else None
@@ -194,6 +335,8 @@ class LiveOracle:
             payload = await self._post(endpoint, query, {"id": chembl_id})
             return str(((payload.get("data") or {}).get("drug") or {}).get("name") or chembl_id)
         except Exception:
+            # Name enrichment is optional because the underlying drug identifier
+            # remains valid and is retained in the oracle source record list.
             return chembl_id
 
     async def _gene(self, gene: str, limit: int = 20):
@@ -215,17 +358,30 @@ class LiveOracle:
           }
         }
         '''
-        obj = ((await self._post(endpoint, query, {"id": target_id})).get("data") or {}).get("target") or {}
+        obj = (
+            (await self._post(endpoint, query, {"id": target_id})).get("data") or {}
+        ).get("target") or {}
         values: list[str] = []
         records = [self._record("Open Targets", target_id)]
+
         for row in ((obj.get("associatedDiseases") or {}).get("rows") or [])[:limit]:
             disease = row.get("disease") or {}
             if disease.get("name"):
                 values.append(f"gene_disease_association:{str(disease['name']).lower()}")
-            records.append(self._record("Open Targets", disease.get("id")))
+            if disease.get("id"):
+                records.append(self._record("Open Targets", disease.get("id")))
+
         clinical_rows = ((obj.get("drugAndClinicalCandidates") or {}).get("rows") or [])[:limit]
-        drug_ids = list(dict.fromkeys(str(row.get("drugId")) for row in clinical_rows if row.get("drugId")))
-        names = dict(await asyncio.gather(*((self._ot_name_pair(drug_id)) for drug_id in drug_ids))) if drug_ids else {}
+        drug_ids = list(
+            dict.fromkeys(
+                str(row.get("drugId"))
+                for row in clinical_rows
+                if row.get("drugId")
+            )
+        )
+        names = dict(
+            await asyncio.gather(*(self._ot_name_pair(drug_id) for drug_id in drug_ids))
+        ) if drug_ids else {}
         for drug_id in drug_ids:
             values.append(f"known_drug:{names.get(drug_id, drug_id).lower()}")
             records.append(self._record("Open Targets", drug_id))
@@ -235,15 +391,18 @@ class LiveOracle:
         return drug_id, await self._ot_drug_name(drug_id)
 
     async def _compound(self, compound: str):
-        endpoint = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{compound}/property/CanonicalSMILES,IUPACName/JSON"
+        endpoint = (
+            "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/"
+            f"{compound}/property/CanonicalSMILES,IUPACName/JSON"
+        )
         props = (((await self._get(endpoint)).get("PropertyTable") or {}).get("Properties") or [])
         if not props:
             return {}, []
-        p = props[0]
-        cid = str(p.get("CID") or "")
+        prop = props[0]
+        cid = str(prop.get("CID") or "")
         value = {
-            "canonical_smiles": p.get("ConnectivitySMILES") or p.get("CanonicalSMILES"),
-            "iupac_name": p.get("IUPACName"),
+            "canonical_smiles": prop.get("ConnectivitySMILES") or prop.get("CanonicalSMILES"),
+            "iupac_name": prop.get("IUPACName"),
             "cid": cid,
         }
         return value, [self._record("PubChem", cid)]
@@ -251,6 +410,7 @@ class LiveOracle:
     async def execute(self, case: BenchmarkCase) -> OracleResult:
         params = case.params
         family = case.family
+
         if family == "identity":
             value, records = await self._identity(params["drug"])
             return OracleResult("scalar", value, records)
@@ -261,7 +421,12 @@ class LiveOracle:
             value, records = await self._approvals(params["drug"])
             return OracleResult("set", value, records)
         if family == "trials":
-            value, records = await self._trials(params["drug"], params["condition"], params["phase"], None)
+            value, records = await self._trials(
+                params["drug"],
+                params["condition"],
+                params["phase"],
+                None,
+            )
             return OracleResult("set", value, records)
         if family == "target":
             value, records = await self._target_drugs(params["target"])
@@ -272,36 +437,78 @@ class LiveOracle:
         if family == "compound":
             value, records = await self._compound(params["compound"])
             return OracleResult("record", value, records)
+
         if family == "cross":
             candidates, chembl_records = await self._target_drugs(params["target"], 15)
 
             async def check(name: str):
                 approvals, trials = await asyncio.gather(
                     self._approvals(name, 3),
-                    self._trials(name, params["condition"], params["phase"], params["status"], 10),
+                    self._trials(
+                        name,
+                        params["condition"],
+                        params["phase"],
+                        params["status"],
+                        10,
+                    ),
                 )
                 return name, approvals, trials
 
             checked = await asyncio.gather(*(check(name) for name in candidates[:10])) if candidates else []
-            accepted = sorted({name for name, (apps, _), (trials, _) in checked if apps and trials})
+            accepted = sorted(
+                {
+                    name
+                    for name, (apps, _), (trials, _) in checked
+                    if apps and trials
+                }
+            )
             records = list(chembl_records)
             for _, (_, app_records), (_, trial_records) in checked:
                 records.extend(app_records)
                 records.extend(trial_records)
             return OracleResult("set", accepted, records)
+
         if family == "user_approval":
-            checked = await asyncio.gather(*(self._approvals(name, 3) for name in params["candidates"]))
-            accepted = sorted(name.lower() for name, (apps, _) in zip(params["candidates"], checked) if apps)
+            checked = await asyncio.gather(
+                *(self._approvals(name, 3) for name in params["candidates"])
+            )
+            accepted = sorted(
+                name.lower()
+                for name, (apps, _) in zip(params["candidates"], checked)
+                if apps
+            )
             records = [record for _, item_records in checked for record in item_records]
             return OracleResult("set", accepted, records)
+
         if family == "user_trials":
-            checked = await asyncio.gather(*(self._trials(name, params["condition"], params["phase"], params["status"], 10) for name in params["candidates"]))
-            accepted = sorted(name.lower() for name, (trials, _) in zip(params["candidates"], checked) if trials)
+            checked = await asyncio.gather(
+                *(
+                    self._trials(
+                        name,
+                        params["condition"],
+                        params["phase"],
+                        params["status"],
+                        10,
+                    )
+                    for name in params["candidates"]
+                )
+            )
+            accepted = sorted(
+                name.lower()
+                for name, (trials, _) in zip(params["candidates"], checked)
+                if trials
+            )
             records = [record for _, item_records in checked for record in item_records]
             return OracleResult("set", accepted, records)
+
         if family == "user_target":
             target_drugs, records = await self._target_drugs(params["target"], 50)
-            live = set(target_drugs)
-            accepted = sorted(name.lower() for name in params["candidates"] if name.lower() in live)
+            target_set = {name.lower() for name in target_drugs}
+            accepted = sorted(
+                name.lower()
+                for name in params["candidates"]
+                if name.lower() in target_set
+            )
             return OracleResult("set", accepted, records)
-        raise ValueError(f"Unknown family {family}")
+
+        raise ValueError(f"Unsupported oracle family: {family}")

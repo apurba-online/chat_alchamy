@@ -7,12 +7,18 @@ from pathlib import Path
 
 from scripts.run_model_baseline import _aggregate
 
+SUPPORTED_SCHEMAS = {
+    "ChatAlchemyModelBaselineRun/v4",
+    "ChatAlchemyModelBaselineRun/v5",
+    "ChatAlchemyModelBaselineRun/v6",
+}
+
 
 def _load(path: Path) -> dict:
     payload = json.loads(path.read_text())
     if not isinstance(payload, dict) or not isinstance(payload.get("cases"), list):
         raise ValueError(f"{path} is not a model-baseline result")
-    if payload.get("schema") != "ChatAlchemyModelBaselineRun/v4":
+    if payload.get("schema") not in SUPPORTED_SCHEMAS:
         raise ValueError(f"unexpected model-baseline schema in {path}: {payload.get('schema')}")
     return payload
 
@@ -21,6 +27,10 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
     if not paths:
         raise ValueError("no model-baseline shards supplied")
     runs = [_load(path) for path in paths]
+
+    schemas = {run.get("schema") for run in runs}
+    if len(schemas) != 1:
+        raise ValueError(f"model baseline schema mismatch: {sorted(schemas)}")
 
     fingerprints = {run.get("benchmark", {}).get("fingerprint_sha256") for run in runs}
     if len(fingerprints) != 1 or None in fingerprints:
@@ -40,10 +50,18 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
         "mode", "model", "prompt_version", "seed", "split_filter", "difficulty_filter",
         "max_results", "max_tool_steps", "oracle_mode", "oracle_snapshot_file_sha256",
     )
+    optional_invariants = (
+        "latency_definition", "same_retrieval_latency_note", "provenance_definition",
+    )
     first_meta = runs[0]["run"]
     for run in runs[1:]:
         for key in invariant_keys:
             if run["run"].get(key) != first_meta.get(key):
+                raise ValueError(f"model baseline configuration mismatch for {key}")
+        for key in optional_invariants:
+            values = {item["run"].get(key) for item in runs}
+            non_null = {value for value in values if value is not None}
+            if len(non_null) > 1:
                 raise ValueError(f"model baseline configuration mismatch for {key}")
 
     rows = [row for run in runs for row in run["cases"]]
@@ -57,16 +75,22 @@ def merge(paths: list[Path], expected_shards: int | None = None) -> dict:
         family: _aggregate([row for row in rows if row.get("family") == family])
         for family in sorted({str(row.get("family")) for row in rows})
     }
+    run_meta = {key: first_meta.get(key) for key in invariant_keys}
+    for key in optional_invariants:
+        if first_meta.get(key) is not None:
+            run_meta[key] = first_meta.get(key)
+
     return {
-        "schema": "ChatAlchemyModelBaselineRunMerged/v1",
+        "schema": "ChatAlchemyModelBaselineRunMerged/v3",
+        "source_schema": next(iter(schemas)),
         "run": {
-            **{key: first_meta.get(key) for key in invariant_keys},
+            **run_meta,
             "num_shards": declared,
             "merged_case_count": len(rows),
             "shard_files": [path.name for path in paths],
             "component_started_at_utc": [run["run"].get("started_at_utc") for run in runs],
             "component_finished_at_utc": [run["run"].get("finished_at_utc") for run in runs],
-            "component_git_sha": sorted({str(run["run"].get("git_sha")) for run in runs}),
+            "component_git_sha": sorted({str(run["run"].get("git_sha")) for run in runs if run["run"].get("git_sha")}),
         },
         "benchmark": runs[0]["benchmark"],
         "summary": _aggregate(rows),

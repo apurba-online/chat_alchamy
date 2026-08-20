@@ -102,7 +102,9 @@ def _percentile(values: list[float], q: float) -> float:
 
 def aggregate_rows(rows: list[dict]) -> dict:
     scored = [float(r["task_score"]) for r in rows if r.get("task_score") is not None]
-    latencies = [float(r["latency_ms"]) for r in rows]
+    system_latencies = [float(r["latency_ms"]) for r in rows]
+    source_latencies = [float(r.get("source_latency_ms", 0.0)) for r in rows]
+    oracle_latencies = [float(r.get("oracle_latency_ms", 0.0)) for r in rows]
     claimed = [r for r in rows if int(r.get("claim_count", 0)) > 0]
     provenance = [float(r["provenance_record_f1"]) for r in rows if r.get("provenance_record_f1") is not None]
     return {
@@ -117,8 +119,14 @@ def aggregate_rows(rows: list[dict]) -> dict:
             int(r.get("claim_count", 0)) > 0 and float(r["supported_claim_rate"]) == 1.0 for r in rows
         ) if rows else 0.0,
         "mean_provenance_record_f1": statistics.mean(provenance) if provenance else None,
-        "median_latency_ms": statistics.median(latencies) if latencies else 0.0,
-        "p95_latency_ms": _percentile(latencies, 0.95),
+        # System efficiency excludes oracle lookup time. `source_latency_ms` is
+        # the sum of per-source trace durations and is reported separately.
+        "median_latency_ms": statistics.median(system_latencies) if system_latencies else 0.0,
+        "p95_latency_ms": _percentile(system_latencies, 0.95),
+        "median_source_latency_ms": statistics.median(source_latencies) if source_latencies else 0.0,
+        "p95_source_latency_ms": _percentile(source_latencies, 0.95),
+        "median_oracle_latency_ms": statistics.median(oracle_latencies) if oracle_latencies else 0.0,
+        "p95_oracle_latency_ms": _percentile(oracle_latencies, 0.95),
         "mean_api_calls": statistics.mean(int(r["api_calls"]) for r in rows) if rows else 0.0,
         "mean_evidence_items": statistics.mean(int(r["evidence_count"]) for r in rows) if rows else 0.0,
     }
@@ -167,11 +175,16 @@ async def main():
     rows = []
     try:
         for case in cases:
-            started = time.perf_counter()
+            oracle_started = time.perf_counter()
             gold, oracle_error = await oracle.get(case)
+            oracle_latency_ms = (time.perf_counter() - oracle_started) * 1000
             oracle_available = gold is not None
 
+            system_started = time.perf_counter()
             response = await engine.answer(case.question, max_results=args.max_results, user_evidence=user_evidence(case))
+            system_latency_ms = (time.perf_counter() - system_started) * 1000
+            source_latency_ms = sum(float(trace.latency_ms) for trace in response.traces)
+
             pred = prediction(case, response)
             score = score_value(gold.kind, pred, gold.value) if gold is not None else None
             source_records = gold.source_records if gold is not None else []
@@ -198,7 +211,12 @@ async def main():
                     "task_score": score,
                     "supported_claim_rate": response.supported_claim_rate,
                     "execution_ok": all(t.ok for t in response.traces) if response.traces else False,
-                    "latency_ms": (time.perf_counter() - started) * 1000,
+                    # Backward-compatible name: this is now strictly system
+                    # wall-clock time and never includes oracle evaluation.
+                    "latency_ms": system_latency_ms,
+                    "system_latency_ms": system_latency_ms,
+                    "source_latency_ms": source_latency_ms,
+                    "oracle_latency_ms": oracle_latency_ms,
                     "api_calls": len(response.traces),
                     "evidence_count": len(response.evidence),
                     "claim_count": len(response.claims),
@@ -225,7 +243,7 @@ async def main():
 
     run_finished = datetime.now(timezone.utc)
     result = {
-        "schema": "ChatAlchemyBenchmarkRun/v5",
+        "schema": "ChatAlchemyBenchmarkRun/v6",
         "run": {
             "started_at_utc": run_started.isoformat(),
             "finished_at_utc": run_finished.isoformat(),
@@ -241,6 +259,7 @@ async def main():
             "shard_index": args.shard_index,
             "max_results": args.max_results,
             "system": "ChatAlchemy-full",
+            "latency_definition": "system wall-clock only; oracle latency excluded; source trace latency reported separately",
             **oracle.metadata(),
         },
         "benchmark": {**manifest, "seed": args.seed},

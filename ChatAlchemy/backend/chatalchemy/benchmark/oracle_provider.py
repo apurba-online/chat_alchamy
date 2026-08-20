@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from .direct_oracle import LiveOracle
 from .generator import BenchmarkCase
-from .oracle import LiveOracle, OracleResult
+from .oracle import OracleResult
 from .oracle_snapshot import load_oracle_snapshot, oracle_result_for_case
 
 

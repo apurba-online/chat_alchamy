@@ -14,10 +14,11 @@ DISPLAY_METRICS = [
     ("mean_task_score", "Task score"),
     ("routing_accuracy", "Routing accuracy"),
     ("execution_success", "Execution success"),
-    ("mean_supported_claim_rate_on_claimed", "Claim support"),
+    ("claiming_rate", "Claim-producing rate"),
+    ("mean_supported_claim_rate_on_claimed", "Evidence-link validity"),
     ("mean_provenance_record_f1", "Provenance F1"),
-    ("median_latency_ms", "Median latency (ms)"),
-    ("p95_latency_ms", "P95 latency (ms)"),
+    ("median_latency_ms", "Median system latency (ms)"),
+    ("p95_latency_ms", "P95 system latency (ms)"),
     ("mean_api_calls", "API calls/query"),
     ("mean_model_total_tokens", "Model tokens/query"),
     ("mean_tool_calls", "Tool calls/query"),
@@ -60,6 +61,7 @@ def _normalize_summary(summary: dict[str, Any]) -> dict[str, Any]:
     aliases = {
         "mean_task_score": ("baseline_mean_task_score",),
         "median_latency_ms": ("median_baseline_latency_ms",),
+        "p95_latency_ms": ("p95_baseline_latency_ms",),
     }
     for target, candidates in aliases.items():
         if normalized.get(target) is None:

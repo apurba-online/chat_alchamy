@@ -18,42 +18,29 @@ on:
       model:
         description: Exact server-side model ID for all model baselines
         required: true
-        default: gpt-5.1-2025-11-13
+        default: gpt-5.6-sol
         type: string
-  push:
-    branches:
-      - paper-campaign-run-2026-08-19
 
 permissions:
   contents: read
 
 concurrency:
-  group: chatalchemy-frozen-primary-${{ github.ref }}-${{ inputs.split || 'test' }}-${{ inputs.model || 'gpt-5.1-2025-11-13' }}
+  group: chatalchemy-frozen-primary-${{ github.ref }}-${{ inputs.split }}-${{ inputs.model }}
   cancel-in-progress: false
 
 env:
   PYTHONUNBUFFERED: '1'
   BENCHMARK_SEED: '1729'
   SHARD_COUNT: '10'
-  CAMPAIGN_SPLIT: ${{ inputs.split || 'test' }}
-  CAMPAIGN_DIFFICULTY: ${{ inputs.difficulty || 'all' }}
-  CAMPAIGN_MODEL: ${{ inputs.model || 'gpt-5.1-2025-11-13' }}
-  FROZEN_REF: paper-v1-freeze-2026-08-19
 
 jobs:
   validate:
     runs-on: ubuntu-latest
-    outputs:
-      credential_ready: ${{ steps.credential.outputs.available }}
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     defaults:
       run:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -62,24 +49,13 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Validate frozen publication artifact
         run: PYTHONPATH=. python scripts/validate_publication_artifact.py
-      - name: Check server-side model credential without printing it
-        id: credential
-        shell: bash
-        run: |
-          if [ -n "$OPENAI_API_KEY" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-            echo "OPENAI_API_KEY repository secret is configured."
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "OPENAI_API_KEY repository secret is not configured; campaign execution will remain gated."
-          fi
       - name: Record campaign study manifest
         env:
-          OPENAI_MODEL: ${{ env.CAMPAIGN_MODEL }}
+          OPENAI_MODEL: ${{ inputs.model }}
           CHAT_ALCHEMY_EXPERIMENT: frozen_primary_campaign
-          CHAT_ALCHEMY_SPLIT: ${{ env.CAMPAIGN_SPLIT }}
-          CHAT_ALCHEMY_DIFFICULTY: ${{ env.CAMPAIGN_DIFFICULTY }}
-        run: PYTHONPATH=. python scripts/make_study_manifest.py --model "$CAMPAIGN_MODEL" --out benchmark/campaign-study-manifest.json
+          CHAT_ALCHEMY_SPLIT: ${{ inputs.split }}
+          CHAT_ALCHEMY_DIFFICULTY: ${{ inputs.difficulty }}
+        run: PYTHONPATH=. python scripts/make_study_manifest.py --model '${{ inputs.model }}' --out benchmark/campaign-study-manifest.json
       - uses: actions/upload-artifact@v4
         with:
           name: campaign-study-manifest
@@ -87,7 +63,6 @@ jobs:
           retention-days: 90
 
   oracle-snapshot:
-    if: ${{ needs.validate.outputs.credential_ready == 'true' }}
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -101,20 +76,18 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: ChatAlchemy/backend/requirements.txt
       - run: pip install -r requirements.txt
-      - name: Capture independent live oracle shard
+      - name: Capture independently executed live oracle shard
         run: >-
           PYTHONPATH=. python scripts/build_oracle_snapshot.py
           --full --seed $BENCHMARK_SEED
-          --split "$CAMPAIGN_SPLIT"
-          --difficulty "$CAMPAIGN_DIFFICULTY"
+          --split '${{ inputs.split }}'
+          --difficulty '${{ inputs.difficulty }}'
           --num-shards $SHARD_COUNT
           --shard-index ${{ matrix.shard }}
           --out benchmark/oracle-shard-${{ matrix.shard }}.json
@@ -132,8 +105,6 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -178,8 +149,6 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -194,8 +163,8 @@ jobs:
         run: >-
           PYTHONPATH=. python scripts/run_live_benchmark.py
           --full --seed $BENCHMARK_SEED
-          --split "$CAMPAIGN_SPLIT"
-          --difficulty "$CAMPAIGN_DIFFICULTY"
+          --split '${{ inputs.split }}'
+          --difficulty '${{ inputs.difficulty }}'
           --num-shards $SHARD_COUNT
           --shard-index ${{ matrix.shard }}
           --oracle-snapshot benchmark/oracle-snapshot.json
@@ -214,8 +183,6 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -239,7 +206,7 @@ jobs:
     timeout-minutes: 360
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_MODEL: ${{ env.CAMPAIGN_MODEL }}
+      OPENAI_MODEL: ${{ inputs.model }}
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -251,8 +218,6 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -269,10 +234,10 @@ jobs:
         run: >-
           PYTHONPATH=. python scripts/run_model_baseline.py
           --mode '${{ matrix.mode }}'
-          --model "$CAMPAIGN_MODEL"
+          --model '${{ inputs.model }}'
           --seed $BENCHMARK_SEED
-          --split "$CAMPAIGN_SPLIT"
-          --difficulty "$CAMPAIGN_DIFFICULTY"
+          --split '${{ inputs.split }}'
+          --difficulty '${{ inputs.difficulty }}'
           --limit 0
           --num-shards $SHARD_COUNT
           --shard-index ${{ matrix.shard }}
@@ -298,8 +263,6 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -335,8 +298,6 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -351,8 +312,8 @@ jobs:
         run: >-
           PYTHONPATH=. python scripts/run_ablation.py
           --seed $BENCHMARK_SEED
-          --split "$CAMPAIGN_SPLIT"
-          --difficulty "$CAMPAIGN_DIFFICULTY"
+          --split '${{ inputs.split }}'
+          --difficulty '${{ inputs.difficulty }}'
           --limit 0
           --num-shards $SHARD_COUNT
           --shard-index ${{ matrix.shard }}
@@ -372,8 +333,6 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -399,8 +358,6 @@ jobs:
         working-directory: ChatAlchemy/backend
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.FROZEN_REF }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
