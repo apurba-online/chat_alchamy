@@ -7,11 +7,13 @@ from typing import Any
 
 import httpx
 
+DEFAULT_MODEL = "gpt-5.6-sol"
+
 
 class LLMClient:
     def __init__(self, client: httpx.AsyncClient | None = None):
         self.api_key = os.getenv("OPENAI_API_KEY")
-        self.model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+        self.model = os.getenv("OPENAI_MODEL") or DEFAULT_MODEL
         self.client = client or httpx.AsyncClient(timeout=60)
         self._owns = client is None
         self.last_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
