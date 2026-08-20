@@ -1,0 +1,6 @@
+authorized_publication_campaign=2026-08-19
+model=gpt-5.6-sol
+benchmark=LiveBioEvidenceBench-v2.1
+seed=1729
+split=test
+frozen_commit=0b994c97e496d581ef3ae68bdb6503431ea1d664
