@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import re
 from typing import Any
 
@@ -84,22 +83,16 @@ class OpenTargetsSource(LiveSource):
         hit = await self._search_hit(query_text, entity)
         return str(hit.get("id")) if hit and hit.get("id") else None
 
-    async def _drug_name(self, chembl_id: str) -> str:
-        query = '''query Drug($id: String!) { drug(chemblId: $id) { id name } }'''
-        try:
-            payload = await self._graphql(query, {"id": chembl_id})
-            drug = (payload.get("data") or {}).get("drug") or {}
-            return str(drug.get("name") or chembl_id)
-        except Exception:
-            # Drug-name enrichment is optional; the ChEMBL identifier still
-            # provides a valid provenance record if this secondary lookup fails.
-            return chembl_id
-
     async def gene_details(self, gene: str, max_results: int = 10) -> list[EvidenceItem]:
         target_id = await self._search_id(gene, "target")
         if not target_id:
             return []
 
+        # Open Targets 26.06 exposes the clinical candidate drug through a
+        # `drug { id name }` GraphQL field. The backing model still contains
+        # drugId/targetId internally, but current GraphQL explicitly replaces
+        # drugId with `drug` and excludes targetId. Querying the backing-model
+        # names therefore produces HTTP 400 on the public API.
         query = '''
         query Target($id: String!) {
           target(ensemblId: $id) {
@@ -112,8 +105,7 @@ class OpenTargetsSource(LiveSource):
             drugAndClinicalCandidates {
               rows {
                 id
-                drugId
-                targetId
+                drug { id name }
                 maxClinicalStage
                 diseases { diseaseId diseaseFromSource }
               }
@@ -160,11 +152,9 @@ class OpenTargetsSource(LiveSource):
             )
 
         clinical_rows = ((obj.get("drugAndClinicalCandidates") or {}).get("rows") or [])[:max_results]
-        drug_ids = list(dict.fromkeys(str(row.get("drugId")) for row in clinical_rows if row.get("drugId")))
-        names = dict(await asyncio.gather(*(self._named_pair(drug_id) for drug_id in drug_ids))) if drug_ids else {}
-
         for row in clinical_rows:
-            drug_id = row.get("drugId")
+            drug = row.get("drug") or {}
+            drug_id = drug.get("id")
             if not drug_id:
                 continue
             disease_items = row.get("diseases") or []
@@ -179,7 +169,7 @@ class OpenTargetsSource(LiveSource):
                 EvidenceItem.build(
                     subject=symbol,
                     predicate="known_drug",
-                    value=names.get(str(drug_id), str(drug_id)),
+                    value=drug.get("name") or str(drug_id),
                     qualifiers=qualifiers,
                     source=self.name,
                     source_record_id=str(drug_id),
@@ -187,9 +177,6 @@ class OpenTargetsSource(LiveSource):
                 )
             )
         return out
-
-    async def _named_pair(self, drug_id: str) -> tuple[str, str]:
-        return drug_id, await self._drug_name(drug_id)
 
     async def disease_genes(self, disease: str, max_results: int = 20) -> list[EvidenceItem]:
         hit = await self._search_hit(disease, "disease")
