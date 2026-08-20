@@ -97,11 +97,12 @@ async def probe(candidates: list[str]) -> dict[str, Any]:
             results.append(row)
 
     return {
-        "schema": "ChatAlchemyOpenAIAccessProbe/v1",
+        "schema": "ChatAlchemyOpenAIAccessProbe/v2",
         "models_endpoint": {
             "http_status": model_list_status,
             "error": model_list_error,
             "listed_model_count": len(listed_models),
+            "listed_model_ids": sorted(listed_models),
         },
         "candidates": results,
         "successful_models": [row["requested_model"] for row in results if row.get("response_ok")],
