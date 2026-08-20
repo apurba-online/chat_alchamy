@@ -43,9 +43,8 @@ class BiomedicalService:
             "phase 4": 4,
             "phase iv": 4,
         }
-        for label, weight in phase_map.items():
-            if label in normalized:
-                return weight
+        if normalized in phase_map:
+            return phase_map[normalized]
         try:
             return max(1, min(4, int(float(text))))
         except (TypeError, ValueError):
