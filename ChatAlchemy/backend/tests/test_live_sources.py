@@ -71,3 +71,29 @@ async def test_live_dailymed_label_query():
         assert any(e.predicate == "dailymed_label_record" for e in response.evidence)
     finally:
         await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_live_opentargets_disease_gene_query():
+    engine = ChatAlchemyEngine()
+    try:
+        response = await engine.answer("What genes are associated with non-small-cell lung cancer?")
+        trace = require_source(response, "Open Targets")
+        assert response.plan.intent == "disease"
+        assert trace.result_count > 0
+        assert any(e.predicate == "disease_gene_association" for e in response.evidence)
+        assert any(str(e.value).upper() == "EGFR" for e in response.evidence)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_live_pubchem_compound_query():
+    engine = ChatAlchemyEngine()
+    try:
+        response = await engine.answer("Give the PubChem CID, canonical SMILES, and IUPAC name for aspirin.")
+        require_source(response, "PubChem")
+        assert response.plan.intent == "compound"
+        assert any(e.predicate == "compound_properties" for e in response.evidence)
+    finally:
+        await engine.close()
