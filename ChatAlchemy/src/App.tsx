@@ -268,12 +268,13 @@ export default function App() {
       setChatRevision(value => value + 1);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown request error';
-      setError(message);
+      const modelUnavailable = /conversational model is temporarily unavailable/i.test(message);
       const assistant: Message = {
         id: newId(),
         role: 'assistant',
-        content:
-          'I could not complete that research workflow. I did not replace the failed evidence path with an unsupported biomedical answer.',
+        content: modelUnavailable
+          ? 'The conversational explanation model is temporarily unavailable. **Live structured biomedical evidence workflows are still available.** Try a disease-to-gene, target-to-drug, FDA, clinical-trial, RxNorm, PubChem, DailyMed, or Open Targets question.'
+          : 'I could not complete that research workflow. I did not replace the failed evidence path with an unsupported biomedical answer.',
         timestamp: new Date(),
         warnings: [message],
       };
@@ -281,6 +282,7 @@ export default function App() {
       setCurrentChat(chat);
       saveChat(chat);
       setChatRevision(value => value + 1);
+      setError(null);
     } finally {
       setLoading(false);
     }
