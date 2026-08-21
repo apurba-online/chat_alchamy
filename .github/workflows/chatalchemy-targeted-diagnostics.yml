@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - diagnostics/ieee-component-2026-08-21
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'ChatAlchemy/backend/scripts/run_targeted_component_diagnostics.py'
+      - '.github/workflows/chatalchemy-targeted-diagnostics.yml'
   workflow_dispatch:
 
 permissions:
