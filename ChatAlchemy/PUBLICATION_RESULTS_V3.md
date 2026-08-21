@@ -72,7 +72,18 @@ Where a frozen oracle was available, paired task-score degradation under source 
 
 ## Counterfactual grounding
 
-The pre-specified 120-case counterfactual grounding suite has **not** produced a complete frozen result artifact. The latest execution still failed on the first model request with HTTP 429 from the model provider. No GOS, PMIR, or other counterfactual number is reported or inferred from partial execution.
+The pre-specified 120-case counterfactual grounding suite completed successfully using GPT-5.6 Sol with prompt version `counterfactual-v2` and seed 1729. The suite contains four balanced synthetic reversal families (30 cases each): mechanism, regulatory status, target relation, and trial status. These are controlled evaluation records and do not modify external biomedical sources.
+
+- Evidence-constrained mean grounding-on-source (GOS): 1.000
+- Question-only mean GOS: 0.000
+- Mean GOS gain: +1.000
+- Evidence-constrained mean parametric-memory intrusion rate (PMIR): 0.000
+- Question-only mean PMIR: 0.050
+- Mean PMIR reduction: 0.050
+- Evidence-constrained exact-required rate: 120/120 (100%)
+- Evidence-constrained forbidden-intrusion rate: 0/120 (0%)
+
+All 120 evidence-constrained responses matched the synthetic record exactly and none used a forbidden outside-knowledge label. The question-only arm returned many empty/unknown answers under the intentionally strict one-token controlled prompt and had a 5% overall forbidden-intrusion rate, concentrated in the regulatory-reversal family (20%). These diagnostics measure compliance with provided counterfactual evidence under a synthetic controlled setting; they are not a measure of real-world biomedical truthfulness or clinical validity.
 
 ## Human-dependent studies
 
