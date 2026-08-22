@@ -1,0 +1,52 @@
+name: Document case study E2E PR
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  browser-case-study:
+    if: github.head_ref == 'case-study/trpv1-2026-08-22'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SITE_URL: https://chat-alchemy.vercel.app
+      EXPECTED_SHA256: 252803c27fcd7e11754c1f6330c5247168d1db2ccbf1b1dec94f33b614b5f131
+      PDF_URL: https://link.springer.com/content/pdf/10.1007/s13238-016-0353-7.pdf
+      CASE_STUDY_PDF: case-study-output/Example_Article.pdf
+      CASE_STUDY_OUT: case-study-output
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install browser tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Fetch checksum-matched article
+        run: |
+          mkdir -p case-study-output
+          curl -L --fail --retry 3 "$PDF_URL" -o "$CASE_STUDY_PDF"
+          echo "$EXPECTED_SHA256  $CASE_STUDY_PDF" | sha256sum -c -
+
+      - name: Run production document workflow in Chromium
+        working-directory: ChatAlchemy/backend
+        run: python scripts/run_document_ui_case_study.py
+
+      - name: Upload screenshots and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatalchemy-document-case-study-browser
+          path: ChatAlchemy/backend/case-study-output/
+          if-no-files-found: error
+          retention-days: 14
