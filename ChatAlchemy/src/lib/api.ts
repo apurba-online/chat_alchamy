@@ -136,13 +136,13 @@ export async function analyzeBiomedical(input: {
 }
 
 export async function getDiseaseDetails(efoId: string): Promise<DiseaseDetails> {
-  const response = await request(`/api/biomedical/disease/${encodeURIComponent(efoId)}`);
+  const response = await request(`/api/biomedical/disease?efo_id=${encodeURIComponent(efoId)}`);
   if (!response.ok) throw new Error(await errorText(response));
   return response.json() as Promise<DiseaseDetails>;
 }
 
 export async function getCompoundDetails(name: string): Promise<CompoundDetails> {
-  const response = await request(`/api/biomedical/compound/${encodeURIComponent(name)}`);
+  const response = await request(`/api/biomedical/compound?name=${encodeURIComponent(name)}`);
   if (!response.ok) throw new Error(await errorText(response));
   return response.json() as Promise<CompoundDetails>;
 }
