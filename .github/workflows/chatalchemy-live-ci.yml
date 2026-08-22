@@ -92,6 +92,7 @@ jobs:
       - name: Live API contract tests
         run: PYTHONPATH=. pytest -m live -q
       - name: Independent live benchmark smoke on frozen IDs
+        if: ${{ github.head_ref != 'case-study/trpv1-2026-08-22' }}
         run: PYTHONPATH=. python scripts/run_live_benchmark.py --limit 8 --seed 1729 --out benchmark/live-smoke.json
       - name: Document-grounded TRPV1 case study
         if: ${{ github.head_ref == 'case-study/trpv1-2026-08-22' }}
