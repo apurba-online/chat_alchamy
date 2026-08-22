@@ -19,18 +19,20 @@ import { downloadBlob } from '../../lib/api';
 import { ResultsViewer } from './ResultsViewer';
 import { LoadingState } from './LoadingState';
 import { ErrorBoundary } from './ErrorBoundary';
+import { DocumentChatDrawer } from './DocumentChatDrawer';
 
 cytoscape.use(cola);
 
 interface Props { onTransferToChat?: () => void; }
 interface DocState { name: string; genes: string[]; diseases: string[]; summary: string; }
 
-export function BiomedicalModule({ onTransferToChat }: Props) {
+export function BiomedicalModule({ onTransferToChat: _onTransferToChat }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<any>(null);
   const [docs, setDocs] = useState<DocState[]>([]);
   const [query, setQuery] = useState('');
+  const [drawerChatId, setDrawerChatId] = useState<string | null>(null);
   const cyRef = useRef<any>(null);
   const genes = [...new Set(docs.flatMap(doc => doc.genes))];
   const diseases = [...new Set(docs.flatMap(doc => doc.diseases))];
@@ -97,6 +99,7 @@ export function BiomedicalModule({ onTransferToChat }: Props) {
     if (!next.length) {
       setResults(null);
       setError(null);
+      setDrawerChatId(null);
     }
   };
 
@@ -118,7 +121,7 @@ export function BiomedicalModule({ onTransferToChat }: Props) {
               <div className="max-w-3xl">
                 <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300"><BookOpenText className="h-3.5 w-3.5" />Document lab</div>
                 <h1 className="text-3xl font-semibold tracking-tight text-slate-950 dark:text-white sm:text-4xl">Connect uploaded literature to live biomedical evidence.</h1>
-                <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300 sm:text-base">Extract genes and disease context from PDF/TXT research documents, explore current Open Targets evidence, inspect networks, and continue the result as a research conversation.</p>
+                <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300 sm:text-base">Extract genes and disease context from PDF/TXT research documents, explore current Open Targets evidence, inspect networks, and continue the result in a side conversation without leaving the document workspace.</p>
               </div>
               <div className="max-w-sm rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-500 dark:border-slate-700 dark:bg-slate-950/50 dark:text-slate-400"><div className="mb-1 flex items-center gap-1.5 font-semibold text-slate-700 dark:text-slate-300"><ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />Data note</div>Uploaded document bytes are processed by the server. Extracted text may be sent to the configured server-side model for research synthesis. Do not upload protected health information.</div>
             </div>
@@ -148,10 +151,11 @@ export function BiomedicalModule({ onTransferToChat }: Props) {
           {loading && <LoadingState />}
 
           {results && !loading && <>
-            <ResultsViewer results={results} onTransferToChat={onTransferToChat} />
+            <ResultsViewer results={results} onTransferToChat={setDrawerChatId} />
             {!!results.networkData?.length && <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-6"><div className="mb-4 flex items-center justify-between"><div><h3 className="flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-white"><Network className="h-5 w-5 text-indigo-600" />Evidence network</h3><p className="mt-1 text-xs text-slate-400">Interactive gene–disease–drug relationships from the current analysis.</p></div><button onClick={downloadGraph} title="Download network PNG" className="rounded-lg border border-slate-200 p-2 text-slate-500 transition hover:border-indigo-200 hover:text-indigo-600 dark:border-slate-700 dark:text-slate-300"><Download className="h-4 w-4" /></button></div><div className="h-[560px] overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800"><CytoscapeComponent elements={results.networkData} cy={(cy: any) => { cyRef.current = cy; }} style={{ width: '100%', height: '100%' }} layout={{ name: 'cola', nodeSpacing: 100, edgeLength: 140, animate: true, maxSimulationTime: 1800 }} stylesheet={[{ selector: 'node', style: { 'label': 'data(label)', 'background-color': '#6366f1', 'color': '#1f2937', 'text-wrap': 'wrap', 'text-max-width': '100px', 'font-size': '11px' } }, { selector: 'node[type="disease"]', style: { 'shape': 'diamond', 'background-color': '#e11d48' } }, { selector: 'node[type="drug"]', style: { 'shape': 'round-rectangle', 'background-color': '#059669' } }, { selector: 'edge', style: { 'width': 'data(weight)', 'line-color': '#9333ea', 'target-arrow-color': '#9333ea', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'label': 'data(label)', 'font-size': '9px' } }, { selector: 'edge[type="drug-gene"]', style: { 'line-color': '#059669', 'target-arrow-color': '#059669' } }, { selector: 'edge[type="disease-gene"]', style: { 'line-color': '#e11d48', 'target-arrow-color': '#e11d48', 'line-style': 'dashed' } }]} /></div><div className="mt-3 flex flex-wrap gap-4 text-xs text-slate-400"><span>● Gene</span><span className="text-rose-600">◆ Disease</span><span className="text-emerald-600">■ Drug</span></div></section>}
           </>}
         </div>
+        <DocumentChatDrawer chatId={drawerChatId} onClose={() => setDrawerChatId(null)} />
       </div>
     </ErrorBoundary>
   );
