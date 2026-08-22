@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowRight,
   BookOpenText,
@@ -7,7 +7,7 @@ import {
   Network,
   Waypoints,
 } from 'lucide-react';
-import { createNewChat, saveChat } from '../../lib/storage';
+import { createNewChat, getChatById, saveChat } from '../../lib/storage';
 import { DataTable } from '../DataTable';
 
 interface Results {
@@ -39,14 +39,25 @@ export function ResultsViewer({
   onTransferToChat,
 }: {
   results: Results;
-  onTransferToChat?: () => void;
+  onTransferToChat?: (chatId: string) => void;
 }) {
   const [moving, setMoving] = useState(false);
+  const [documentChatId, setDocumentChatId] = useState<string | null>(null);
   const uniqueSources = [...new Set((results.evidence || []).map(item => item.source).filter(Boolean))];
+  const resultIdentity = `${results.paperSummary || ''}|${(results.genes || []).join('|')}`;
+
+  useEffect(() => {
+    setDocumentChatId(null);
+  }, [resultIdentity]);
 
   const transfer = () => {
     setMoving(true);
     try {
+      if (documentChatId && getChatById(documentChatId)) {
+        onTransferToChat?.(documentChatId);
+        return;
+      }
+
       const chat = createNewChat('Document Evidence Analysis');
       const diseaseSummary = (results.diseaseEvidenceSummary || [])
         .slice(0, 10)
@@ -68,7 +79,8 @@ export function ResultsViewer({
         },
       ];
       saveChat(chat);
-      onTransferToChat?.();
+      setDocumentChatId(chat.id);
+      onTransferToChat?.(chat.id);
     } finally {
       setMoving(false);
     }
@@ -87,7 +99,7 @@ export function ResultsViewer({
           </div>
         </div>
         <button onClick={transfer} disabled={moving} className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100">
-          {moving ? 'Opening research chat…' : 'Continue in research chat'}
+          {moving ? 'Opening side chat…' : 'Continue in research chat'}
           {!moving && <ArrowRight className="h-4 w-4" />}
         </button>
       </div>
