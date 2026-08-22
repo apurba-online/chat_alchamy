@@ -80,6 +80,61 @@ class OpenTargetsSource(LiveSource):
         hit = await self._search_hit(query_text, entity)
         return str(hit.get("id")) if hit and hit.get("id") else None
 
+    async def disease_details(self, efo_id: str, max_results: int = 8) -> dict[str, Any] | None:
+        """Return disease metadata and current clinical drug candidates by canonical ID.
+
+        This endpoint is intentionally server-side. The production frontend CSP
+        permits network requests only to ChatAlchemy itself, so browser code must
+        not call Open Targets GraphQL directly.
+        """
+        query = '''
+        query DiseaseDetails($id: String!) {
+          disease(efoId: $id) {
+            id
+            name
+            drugAndClinicalCandidates {
+              rows {
+                id
+                maxClinicalStage
+                drug { id name }
+              }
+            }
+          }
+        }
+        '''
+        payload = await self._graphql(query, {"id": efo_id})
+        obj = (payload.get("data") or {}).get("disease") or {}
+        if not obj:
+            return None
+
+        drugs: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        rows = ((obj.get("drugAndClinicalCandidates") or {}).get("rows") or [])
+        for row in rows:
+            drug = row.get("drug") or {}
+            drug_id = str(drug.get("id") or "")
+            name = str(drug.get("name") or "").strip()
+            key = drug_id or name.lower()
+            if not name or not key or key in seen:
+                continue
+            seen.add(key)
+            drugs.append({
+                "id": drug_id or None,
+                "name": name,
+                "max_clinical_stage": row.get("maxClinicalStage"),
+            })
+            if len(drugs) >= max_results:
+                break
+
+        canonical_id = str(obj.get("id") or efo_id)
+        return {
+            "id": canonical_id,
+            "name": str(obj.get("name") or canonical_id),
+            "drugs": drugs,
+            "source": self.name,
+            "source_url": f"https://platform.opentargets.org/disease/{canonical_id}",
+        }
+
     async def gene_details(self, gene: str, max_results: int = 10) -> list[EvidenceItem]:
         target_id = await self._search_id(gene, "target")
         if not target_id:
