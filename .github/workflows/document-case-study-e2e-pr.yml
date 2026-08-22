@@ -17,7 +17,7 @@ jobs:
       SITE_URL: https://chat-alchemy.vercel.app
       EXPECTED_SHA256: 252803c27fcd7e11754c1f6330c5247168d1db2ccbf1b1dec94f33b614b5f131
       PDF_URL: https://link.springer.com/content/pdf/10.1007/s13238-016-0353-7.pdf
-      CASE_STUDY_PDF: case-study-output/Example_Article.pdf
+      CASE_STUDY_PDF: ../../case-study-output/Example_Article.pdf
       CASE_STUDY_OUT: case-study-output
     steps:
       - uses: actions/checkout@v4
@@ -35,8 +35,8 @@ jobs:
       - name: Fetch checksum-matched article
         run: |
           mkdir -p case-study-output
-          curl -L --fail --retry 3 "$PDF_URL" -o "$CASE_STUDY_PDF"
-          echo "$EXPECTED_SHA256  $CASE_STUDY_PDF" | sha256sum -c -
+          curl -L --fail --retry 3 "$PDF_URL" -o case-study-output/Example_Article.pdf
+          echo "$EXPECTED_SHA256  case-study-output/Example_Article.pdf" | sha256sum -c -
 
       - name: Run production document workflow in Chromium
         working-directory: ChatAlchemy/backend
