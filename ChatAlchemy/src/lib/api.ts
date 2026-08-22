@@ -3,6 +3,29 @@ import type { QueryResponse, SystemHealth, TableData } from '../types';
 const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 const DEFAULT_TIMEOUT_MS = 55_000;
 
+export interface DiseaseDetailDrug {
+  id?: string | null;
+  name: string;
+  max_clinical_stage?: string | null;
+}
+
+export interface DiseaseDetails {
+  id: string;
+  name: string;
+  drugs: DiseaseDetailDrug[];
+  source: string;
+  source_url?: string | null;
+}
+
+export interface CompoundDetails {
+  name: string;
+  cid?: string | number | null;
+  iupac?: string | null;
+  smiles?: string | null;
+  source: string;
+  source_url?: string | null;
+}
+
 async function errorText(response: Response): Promise<string> {
   const fallback = `Request failed with HTTP ${response.status}`;
   let text = '';
@@ -110,6 +133,18 @@ export async function analyzeBiomedical(input: {
     suggested_diseases: input.suggestedDiseases || [],
     paper_summary: input.paperSummary || null,
   });
+}
+
+export async function getDiseaseDetails(efoId: string): Promise<DiseaseDetails> {
+  const response = await request(`/api/biomedical/disease/${encodeURIComponent(efoId)}`);
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json() as Promise<DiseaseDetails>;
+}
+
+export async function getCompoundDetails(name: string): Promise<CompoundDetails> {
+  const response = await request(`/api/biomedical/compound/${encodeURIComponent(name)}`);
+  if (!response.ok) throw new Error(await errorText(response));
+  return response.json() as Promise<CompoundDetails>;
 }
 
 export async function parseSpreadsheet(file: File): Promise<{ filename: string; rows: Record<string, unknown>[] }> {
