@@ -93,11 +93,16 @@ jobs:
         run: PYTHONPATH=. pytest -m live -q
       - name: Independent live benchmark smoke on frozen IDs
         run: PYTHONPATH=. python scripts/run_live_benchmark.py --limit 8 --seed 1729 --out benchmark/live-smoke.json
+      - name: Document-grounded TRPV1 case study
+        if: ${{ github.head_ref == 'case-study/trpv1-2026-08-22' }}
+        run: PYTHONPATH=. python scripts/run_document_case_study.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: chatalchemy-live-smoke
-          path: ChatAlchemy/backend/benchmark/live-smoke.json
+          path: |
+            ChatAlchemy/backend/benchmark/live-smoke.json
+            ChatAlchemy/backend/benchmark/document-case-study-trpv1.json
           if-no-files-found: ignore
 
   model-credential-smoke:
