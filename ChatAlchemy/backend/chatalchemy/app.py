@@ -44,6 +44,7 @@ OVERLOAD_ACQUIRE_TIMEOUT_SECONDS = max(
     min(5.0, float(os.getenv("CHATALCHEMY_OVERLOAD_WAIT_SECONDS", "1.0"))),
 )
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
+BIOMEDICAL_ID_RE = re.compile(r"^(?:EFO|MONDO|OTAR)_[A-Za-z0-9]+$")
 
 logger = logging.getLogger("chatalchemy.api")
 if not logger.handlers:
@@ -281,6 +282,48 @@ async def biomedical_analyze(req: BiomedicalAnalyzeRequest):
         return await biomedical.analyze(req.genes, req.query, req.paper_summary)
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _translate_upstream_error(exc)
+
+
+@app.get("/api/biomedical/disease/{efo_id}")
+async def biomedical_disease_details(efo_id: str):
+    if engine is None:
+        raise RuntimeError("Engine not initialized")
+    if not BIOMEDICAL_ID_RE.fullmatch(efo_id):
+        raise HTTPException(status_code=400, detail="Invalid Open Targets disease identifier")
+    source = engine.sources["opentargets"]
+    try:
+        result = await source.disease_details(efo_id, max_results=8)
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _translate_upstream_error(exc)
+    if not result:
+        raise HTTPException(status_code=404, detail="Disease record was not found in Open Targets")
+    return result
+
+
+@app.get("/api/biomedical/compound/{name}")
+async def biomedical_compound_details(name: str):
+    if engine is None:
+        raise RuntimeError("Engine not initialized")
+    clean_name = name.strip()
+    if not clean_name or len(clean_name) > 160:
+        raise HTTPException(status_code=400, detail="Invalid compound name")
+    source = engine.sources["pubchem"]
+    try:
+        evidence = await source.compound(clean_name)
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _translate_upstream_error(exc)
+    if not evidence:
+        raise HTTPException(status_code=404, detail="Compound record was not found in PubChem")
+    item = evidence[0]
+    value = item.value if isinstance(item.value, dict) else {}
+    return {
+        "name": clean_name,
+        "cid": value.get("cid"),
+        "iupac": value.get("iupac_name"),
+        "smiles": value.get("canonical_smiles"),
+        "source": item.source,
+        "source_url": item.source_url,
+    }
 
 
 @app.post("/api/data/parse")
