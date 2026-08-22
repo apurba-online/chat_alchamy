@@ -44,7 +44,10 @@ OVERLOAD_ACQUIRE_TIMEOUT_SECONDS = max(
     min(5.0, float(os.getenv("CHATALCHEMY_OVERLOAD_WAIT_SECONDS", "1.0"))),
 )
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,80}$")
-BIOMEDICAL_ID_RE = re.compile(r"^(?:EFO|MONDO|OTAR)_[A-Za-z0-9]+$")
+BIOMEDICAL_ID_RE = re.compile(
+    r"^(?:EFO|MONDO|OTAR|Orphanet|HP|NCIT|DOID)_[A-Za-z0-9]+$",
+    re.IGNORECASE,
+)
 
 logger = logging.getLogger("chatalchemy.api")
 if not logger.handlers:
@@ -296,6 +299,11 @@ async def biomedical_disease_details(efo_id: str):
         result = await source.disease_details(efo_id, max_results=8)
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _translate_upstream_error(exc)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Open Targets could not return details for this disease record right now.",
+        ) from exc
     if not result:
         raise HTTPException(status_code=404, detail="Disease record was not found in Open Targets")
     return result
@@ -312,7 +320,17 @@ async def biomedical_compound_details(name: str):
     source = engine.sources["pubchem"]
     try:
         evidence = await source.compound(clean_name)
-    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No PubChem structure record was found for this candidate name. "
+                    "The Open Targets drug record is still available."
+                ),
+            ) from exc
+        _translate_upstream_error(exc)
+    except httpx.RequestError as exc:
         _translate_upstream_error(exc)
     if not evidence:
         raise HTTPException(status_code=404, detail="Compound record was not found in PubChem")
