@@ -81,7 +81,7 @@ export function DocumentChatDrawer({
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setChat(chatId ? getChatById(chatId) : null);
+    setChat(chatId ? getChatById(chatId) || null : null);
   }, [chatId]);
 
   useEffect(() => {
