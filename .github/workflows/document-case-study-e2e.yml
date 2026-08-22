@@ -1,0 +1,327 @@
+name: Document case study E2E
+
+on:
+  push:
+    branches:
+      - case-study/trpv1-2026-08-22
+    paths:
+      - '.github/workflows/document-case-study-e2e.yml'
+      - 'ChatAlchemy/backend/scripts/run_document_case_study.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-case-study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SITE_URL: https://chat-alchemy.vercel.app
+      EXPECTED_SHA256: 252803c27fcd7e11754c1f6330c5247168d1db2ccbf1b1dec94f33b614b5f131
+      PDF_URL: https://link.springer.com/content/pdf/10.1007/s13238-016-0353-7.pdf
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install browser tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Fetch exact case-study PDF
+        run: |
+          mkdir -p case-study-output
+          curl -L --fail --retry 3 "$PDF_URL" -o case-study-output/Example_Article.pdf
+          echo "$EXPECTED_SHA256  case-study-output/Example_Article.pdf" | sha256sum -c -
+          stat -c 'PDF bytes: %s' case-study-output/Example_Article.pdf
+
+      - name: Run production UI case study
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import re
+          import traceback
+          from pathlib import Path
+
+          from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+          from playwright.sync_api import sync_playwright
+
+          OUT = Path('case-study-output')
+          PDF = OUT / 'Example_Article.pdf'
+          SITE = os.environ['SITE_URL']
+          EXPECTED = os.environ['EXPECTED_SHA256']
+
+          sha = hashlib.sha256(PDF.read_bytes()).hexdigest()
+          if sha != EXPECTED:
+              raise SystemExit(f'PDF checksum mismatch: {sha}')
+
+          report: dict = {
+              'site_url': SITE,
+              'pdf': {'name': PDF.name, 'bytes': PDF.stat().st_size, 'sha256': sha},
+              'success': False,
+              'upload': {},
+              'trpv1_focus': {},
+              'disease_modals': [],
+              'compound_drilldown': {},
+              'drawer_chat': {},
+              'http_errors': [],
+              'console_errors': [],
+              'page_errors': [],
+              'screenshots': [],
+          }
+
+          def write_json():
+              (OUT / 'case-study-report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding='utf-8')
+
+          def clean_filename(name: str) -> str:
+              return re.sub(r'[^a-zA-Z0-9_.-]+', '-', name).strip('-').lower()
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              context = browser.new_context(
+                  viewport={'width': 1440, 'height': 1050},
+                  color_scheme='light',
+                  reduced_motion='reduce',
+                  accept_downloads=True,
+              )
+              page = context.new_page()
+              page.set_default_timeout(15000)
+
+              def screenshot(name: str, full_page: bool = True):
+                  path = OUT / name
+                  page.screenshot(path=str(path), full_page=full_page, animations='disabled')
+                  report['screenshots'].append(name)
+
+              def body_text() -> str:
+                  try:
+                      return page.locator('body').inner_text(timeout=5000)
+                  except Exception:
+                      return ''
+
+              def save_body(name: str):
+                  (OUT / name).write_text(body_text(), encoding='utf-8')
+
+              def on_console(msg):
+                  if msg.type == 'error':
+                      report['console_errors'].append(msg.text)
+
+              def on_page_error(error):
+                  report['page_errors'].append(str(error))
+
+              def on_response(response):
+                  if response.status >= 400:
+                      url = response.url
+                      if url.startswith(SITE) or '/api/' in url or 'opentargets' in url or 'pubchem' in url:
+                          report['http_errors'].append({'status': response.status, 'url': url})
+
+              page.on('console', on_console)
+              page.on('pageerror', on_page_error)
+              page.on('response', on_response)
+
+              try:
+                  page.goto(SITE, wait_until='domcontentloaded', timeout=90000)
+                  page.wait_for_timeout(2500)
+                  screenshot('01-workspace.png')
+
+                  page.get_by_role('button', name='Document lab').click()
+                  page.get_by_text('Connect uploaded literature to live biomedical evidence.').wait_for(timeout=30000)
+                  screenshot('02-document-lab-empty.png')
+
+                  file_input = page.locator('input[type=file][accept*=".pdf"]').first
+                  file_input.set_input_files(str(PDF.resolve()))
+
+                  outcome = 'unknown'
+                  try:
+                      page.get_by_text('Document analysis ready').wait_for(timeout=240000)
+                      outcome = 'ready'
+                  except PlaywrightTimeoutError:
+                      text = body_text()
+                      outcome = 'error' if ('Could not process document' in text or 'Biomedical analysis failed' in text or 'Internal Server Error' in text) else 'timeout'
+
+                  page.wait_for_timeout(2500)
+                  upload_text = body_text()
+                  report['upload']['outcome'] = outcome
+                  report['upload']['document_ready'] = 'Document analysis ready' in upload_text
+                  report['upload']['raw_error_visible'] = any(x in upload_text for x in ['Internal Server Error', 'Could not process document', 'Biomedical analysis failed'])
+                  save_body('03-document-analysis.txt')
+                  screenshot('03-document-analysis-full.png')
+
+                  if outcome != 'ready':
+                      report['upload']['visible_text_tail'] = upload_text[-4000:]
+                      write_json()
+                      raise RuntimeError(f'Document upload did not become ready: {outcome}')
+
+                  gene_label = page.get_by_text('Extracted genes', exact=True)
+                  if gene_label.count():
+                      gene_buttons = gene_label.locator('xpath=..').locator('button').all_inner_texts()
+                  else:
+                      gene_buttons = []
+                  disease_label = page.get_by_text('Suggested diseases', exact=True)
+                  if disease_label.count():
+                      disease_buttons = disease_label.locator('xpath=..').locator('button').all_inner_texts()
+                  else:
+                      disease_buttons = []
+                  report['upload']['extracted_genes'] = [x.strip() for x in gene_buttons if x.strip()]
+                  report['upload']['suggested_diseases'] = [x.strip() for x in disease_buttons if x.strip()]
+
+                  ready_card = page.get_by_text('Document analysis ready', exact=True).locator('xpath=..')
+                  report['upload']['ready_card_text'] = ready_card.inner_text() if ready_card.count() else ''
+
+                  # Focus the manuscript case study on TRPV1 when extraction surfaced it.
+                  trpv1 = page.get_by_role('button', name='TRPV1', exact=True)
+                  if trpv1.count():
+                      trpv1.first.click()
+                      try:
+                          page.get_by_text('Working through the evidence path').wait_for(state='hidden', timeout=180000)
+                      except Exception:
+                          pass
+                      page.wait_for_timeout(3000)
+                      trpv1_text = body_text()
+                      report['trpv1_focus']['clicked'] = True
+                      report['trpv1_focus']['raw_error_visible'] = any(x in trpv1_text for x in ['Internal Server Error', 'Biomedical analysis failed'])
+                      save_body('04-trpv1-focused.txt')
+                      screenshot('04-trpv1-focused.png')
+                  else:
+                      report['trpv1_focus']['clicked'] = False
+
+                  # Expand the evidence table so disease-link coverage can be checked.
+                  show_all = page.get_by_role('button', name=re.compile(r'^Show All \('))
+                  if show_all.count():
+                      show_all.first.click()
+                      page.wait_for_timeout(500)
+
+                  disease_link_locator = page.locator('button[title^="Open disease information for "]')
+                  disease_titles = disease_link_locator.evaluate_all("els => [...new Set(els.map(e => e.getAttribute('title')).filter(Boolean))]")
+                  report['trpv1_focus']['disease_link_count'] = len(disease_titles)
+                  report['trpv1_focus']['disease_link_titles'] = disease_titles[:25]
+
+                  first_good_modal = None
+                  for idx, title in enumerate(disease_titles[:8], start=1):
+                      entry = {'title': title, 'opened': False, 'status': 'unknown', 'text': ''}
+                      try:
+                          button = page.locator(f'button[title="{title}"]').first
+                          button.scroll_into_view_if_needed()
+                          button.click()
+                          page.get_by_text('Disease Information', exact=True).wait_for(timeout=15000)
+                          page.wait_for_timeout(3500)
+                          modal = page.get_by_text('Disease Information', exact=True).locator('xpath=..')
+                          modal_text = modal.inner_text()
+                          entry['opened'] = True
+                          entry['text'] = modal_text[:5000]
+                          if 'Could not load' in modal_text or 'request failed' in modal_text or 'Internal Server Error' in modal_text:
+                              entry['status'] = 'error'
+                          else:
+                              entry['status'] = 'ok'
+                              if first_good_modal is None:
+                                  first_good_modal = title
+                          if idx <= 3 or entry['status'] == 'error':
+                              screenshot(f'05-disease-{idx}-{clean_filename(title.replace("Open disease information for ", ""))}.png', full_page=False)
+                      except Exception as exc:
+                          entry['status'] = 'exception'
+                          entry['text'] = f'{type(exc).__name__}: {exc}'
+                      finally:
+                          close = page.get_by_label('Close disease information')
+                          if close.count():
+                              try:
+                                  close.last.click()
+                                  page.wait_for_timeout(300)
+                              except Exception:
+                                  page.keyboard.press('Escape')
+                      report['disease_modals'].append(entry)
+
+                  # Re-open the first successful disease and inspect a clinical candidate + PubChem drill-down.
+                  if first_good_modal:
+                      page.locator(f'button[title="{first_good_modal}"]').first.click()
+                      page.get_by_text('Disease Information', exact=True).wait_for(timeout=15000)
+                      page.wait_for_timeout(2500)
+                      modal = page.get_by_text('Disease Information', exact=True).locator('xpath=..')
+                      candidate_buttons = modal.locator('button').all()
+                      candidate = None
+                      for candidate_button in candidate_buttons:
+                          try:
+                              txt = candidate_button.inner_text().strip()
+                          except Exception:
+                              continue
+                          if txt and 'Close disease information' not in txt:
+                              candidate = candidate_button
+                              report['compound_drilldown']['candidate_button_text'] = txt
+                              break
+                      if candidate is not None:
+                          candidate.click()
+                          page.wait_for_timeout(5500)
+                          modal_text = modal.inner_text()
+                          report['compound_drilldown']['status'] = 'error' if ('Could not load' in modal_text or 'request failed' in modal_text) else 'ok'
+                          report['compound_drilldown']['modal_text'] = modal_text[:7000]
+                          screenshot('06-disease-compound-drilldown.png', full_page=False)
+                      else:
+                          report['compound_drilldown']['status'] = 'no-drug-candidate'
+                      close = page.get_by_label('Close disease information')
+                      if close.count():
+                          close.last.click()
+                          page.wait_for_timeout(500)
+                  else:
+                      report['compound_drilldown']['status'] = 'no-successful-disease-modal'
+
+                  # Verify that Continue in research chat opens an in-page drawer and preserves Document Lab.
+                  page.get_by_role('button', name=re.compile('Continue in research chat')).click()
+                  page.get_by_text('Document research chat', exact=True).wait_for(timeout=15000)
+                  url_after_drawer = page.url
+                  drawer_text = page.get_by_text('Document research chat', exact=True).locator('xpath=../..').inner_text()
+                  report['drawer_chat']['opened'] = True
+                  report['drawer_chat']['url_after_open'] = url_after_drawer
+                  report['drawer_chat']['stayed_on_same_url'] = url_after_drawer.rstrip('/') == SITE.rstrip('/')
+                  report['drawer_chat']['document_lab_still_mounted'] = page.get_by_text('Connect uploaded literature to live biomedical evidence.').count() > 0
+                  report['drawer_chat']['initial_text'] = drawer_text[:8000]
+                  screenshot('07-document-research-chat-drawer.png', full_page=False)
+
+                  question = 'What is the chemical structure of capsaicin?'
+                  drawer = page.get_by_text('Document research chat', exact=True).locator('xpath=../..')
+                  textarea = drawer.locator('textarea[placeholder="Ask a biomedical research question…"]')
+                  textarea.fill(question)
+                  textarea.press('Enter')
+                  page.get_by_text(question, exact=True).wait_for(timeout=15000)
+                  try:
+                      drawer.get_by_text('Working through the evidence path…', exact=True).wait_for(state='hidden', timeout=180000)
+                  except Exception:
+                      pass
+                  page.wait_for_timeout(3500)
+                  final_drawer_text = drawer.inner_text()
+                  report['drawer_chat']['capsaicin_question'] = question
+                  report['drawer_chat']['final_text'] = final_drawer_text[:12000]
+                  report['drawer_chat']['raw_error_visible'] = any(x in final_drawer_text for x in ['Internal Server Error', 'I could not complete that follow-up workflow'])
+                  screenshot('08-capsaicin-followup.png', full_page=False)
+
+                  report['success'] = True
+
+              except Exception as exc:
+                  report['fatal_error'] = f'{type(exc).__name__}: {exc}'
+                  report['traceback'] = traceback.format_exc()
+                  try:
+                      screenshot('99-failure-state.png')
+                      save_body('99-failure-state.txt')
+                  except Exception:
+                      pass
+              finally:
+                  write_json()
+                  browser.close()
+
+          print((OUT / 'case-study-report.json').read_text(encoding='utf-8'))
+          PY
+
+      - name: Upload case-study evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatalchemy-document-case-study
+          path: case-study-output/
+          if-no-files-found: error
+          retention-days: 14
