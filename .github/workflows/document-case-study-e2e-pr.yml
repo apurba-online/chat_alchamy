@@ -40,7 +40,18 @@ jobs:
 
       - name: Run production document workflow in Chromium
         working-directory: ChatAlchemy/backend
-        run: python scripts/run_document_ui_case_study.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/run_document_ui_case_study.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              'drawer = page.get_by_text("Document research chat", exact=True).locator("xpath=../..")',
+              'drawer = page.get_by_text("Document research chat", exact=True).locator("xpath=ancestor::aside")',
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+          python scripts/run_document_ui_case_study.py
 
       - name: Upload screenshots and report
         if: always()
