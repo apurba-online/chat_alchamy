@@ -284,6 +284,7 @@ async def biomedical_analyze(req: BiomedicalAnalyzeRequest):
         _translate_upstream_error(exc)
 
 
+@app.get("/api/biomedical/disease")
 @app.get("/api/biomedical/disease/{efo_id}")
 async def biomedical_disease_details(efo_id: str):
     if engine is None:
@@ -300,6 +301,7 @@ async def biomedical_disease_details(efo_id: str):
     return result
 
 
+@app.get("/api/biomedical/compound")
 @app.get("/api/biomedical/compound/{name}")
 async def biomedical_compound_details(name: str):
     if engine is None:
