@@ -149,21 +149,24 @@ export function DiseaseModal({
                       <span className="text-xs text-gray-400">{drug.max_clinical_stage}</span>
                     )}
                   </div>
-                  <img
-                    src={`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(drug.name)}/PNG`}
-                    alt={`PubChem structure for ${drug.name}`}
-                    className="mx-auto max-h-72 rounded-lg bg-white"
-                  />
+
                   {chemLoading ? (
-                    <div className="mt-4 flex items-center gap-2 text-sm text-gray-500">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Loading PubChem properties…
+                    <div className="flex min-h-64 items-center justify-center rounded-lg bg-gray-50 text-sm text-gray-500 dark:bg-gray-900">
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading PubChem structure and properties…
                     </div>
                   ) : chemError ? (
-                    <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
                       {chemError}
                     </div>
                   ) : chem ? (
                     <>
+                      {chem.cid && (
+                        <img
+                          src={`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${encodeURIComponent(String(chem.cid))}/PNG`}
+                          alt={`PubChem structure for ${drug.name}`}
+                          className="mx-auto max-h-72 rounded-lg bg-white"
+                        />
+                      )}
                       <dl className="mt-3 space-y-2 text-sm">
                         <div>
                           <dt className="font-medium text-gray-900 dark:text-gray-100">Canonical SMILES</dt>
