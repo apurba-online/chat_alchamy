@@ -1,0 +1,190 @@
+name: ChatAlchemy Temporal T1 v1
+
+on:
+  push:
+    branches:
+      - automation/temporal-t1-v1-20260826
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  FROZEN_SHA: 0b994c97e496d581ef3ae68bdb6503431ea1d664
+  BENCHMARK: LiveBioEvidenceBench-v2.1
+  SEED: '1729'
+
+jobs:
+  oracle-t1:
+    name: T1 oracle shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Verify immutable method commit
+        run: test "$(git rev-parse HEAD)" = "$FROZEN_SHA"
+      - name: Capture fresh live oracle/source state
+        run: >-
+          PYTHONPATH=. python scripts/build_oracle_snapshot.py
+          --full --seed "$SEED" --split test --difficulty all
+          --num-shards 10 --shard-index ${{ matrix.shard }}
+          --out benchmark/t1-oracle-shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: temporal-t1-v1-oracle-shard-${{ matrix.shard }}
+          path: ChatAlchemy/backend/benchmark/t1-oracle-shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+  merge-oracle-t1:
+    name: Merge T1 oracle
+    needs: oracle-t1
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: temporal-t1-v1-oracle-shard-*
+          path: ChatAlchemy/backend/benchmark/t1-oracle-shards
+          merge-multiple: true
+      - name: Merge fresh oracle snapshot
+        run: |
+          set -euo pipefail
+          files=(benchmark/t1-oracle-shards/t1-oracle-shard-*.json)
+          test "${#files[@]}" -eq 10
+          PYTHONPATH=. python scripts/merge_oracle_snapshots.py "${files[@]}" --expected-shards 10 --out benchmark/t1-oracle-snapshot.json
+      - name: Validate frozen T1 case identity
+        run: |
+          python - <<'PY'
+          import json
+          p=json.load(open('benchmark/t1-oracle-snapshot.json'))
+          assert p['benchmark']['seed']==1729
+          assert len(p['cases'])==900, len(p['cases'])
+          assert len({r['id'] for r in p['cases']})==900
+          print(json.dumps({'case_count':len(p['cases']),'oracle_coverage':p['oracle_coverage'],'fingerprint':p['benchmark']['fingerprint_sha256']},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: temporal-t1-v1-oracle-snapshot
+          path: ChatAlchemy/backend/benchmark/t1-oracle-snapshot.json
+          retention-days: 90
+
+  full-t1:
+    name: T1 full-system shard ${{ matrix.shard }}
+    needs: merge-oracle-t1
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9]
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ChatAlchemy/backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Verify immutable method commit
+        run: test "$(git rev-parse HEAD)" = "$FROZEN_SHA"
+      - uses: actions/download-artifact@v4
+        with:
+          name: temporal-t1-v1-oracle-snapshot
+          path: ChatAlchemy/backend/benchmark/frozen-t1
+      - name: Run frozen full system against fresh T1 oracle
+        env:
+          GITHUB_SHA: 0b994c97e496d581ef3ae68bdb6503431ea1d664
+        run: >-
+          PYTHONPATH=. python scripts/run_live_benchmark.py
+          --full --seed "$SEED" --split test --difficulty all
+          --num-shards 10 --shard-index ${{ matrix.shard }}
+          --oracle-snapshot benchmark/frozen-t1/t1-oracle-snapshot.json
+          --out benchmark/t1-full-shard-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: temporal-t1-v1-full-shard-${{ matrix.shard }}
+          path: ChatAlchemy/backend/benchmark/t1-full-shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+  merge-full-t1:
+    name: Merge T1 full system
+    needs: full-t1
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ChatAlchemy/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: temporal-t1-v1-full-shard-*
+          path: ChatAlchemy/backend/benchmark/t1-full-shards
+          merge-multiple: true
+      - name: Merge full-system shards
+        run: |
+          set -euo pipefail
+          files=(benchmark/t1-full-shards/t1-full-shard-*.json)
+          test "${#files[@]}" -eq 10
+          PYTHONPATH=. python scripts/merge_benchmark_shards.py "${files[@]}" --expected-shards 10 --out benchmark/t1-full-merged.json
+      - name: Validate T1 full system identity
+        run: |
+          python - <<'PY'
+          import json
+          p=json.load(open('benchmark/t1-full-merged.json'))
+          assert len(p['cases'])==900
+          assert p['run']['seed']==1729
+          assert p['run']['split_filter']=='test'
+          assert p['run']['difficulty_filter']=='all'
+          assert p['run']['system']=='ChatAlchemy-full'
+          assert p['run']['component_git_sha']==['0b994c97e496d581ef3ae68bdb6503431ea1d664']
+          print(json.dumps({'summary':p['summary'],'benchmark':p['benchmark'],'run':p['run']},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: temporal-t1-v1-full-merged
+          path: ChatAlchemy/backend/benchmark/t1-full-merged.json
+          retention-days: 90
